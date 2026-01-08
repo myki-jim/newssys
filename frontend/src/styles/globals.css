@@ -1,0 +1,180 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --background: 0 0% 100%;
+    --foreground: 222.2 84% 4.9%;
+    --card: 0 0% 100%;
+    --card-foreground: 222.2 84% 4.9%;
+    --popover: 0 0% 100%;
+    --popover-foreground: 222.2 84% 4.9%;
+    --primary: 221.2 83.2% 53.3%;
+    --primary-foreground: 210 40% 98%;
+    --secondary: 210 40% 96.1%;
+    --secondary-foreground: 222.2 47.4% 11.2%;
+    --muted: 210 40% 96.1%;
+    --muted-foreground: 215.4 16.3% 46.9%;
+    --accent: 210 40% 96.1%;
+    --accent-foreground: 222.2 47.4% 11.2%;
+    --destructive: 0 84.2% 60.2%;
+    --destructive-foreground: 210 40% 98%;
+    --border: 214.3 31.8% 91.4%;
+    --input: 214.3 31.8% 91.4%;
+    --ring: 221.2 83.2% 53.3%;
+    --radius: 0.5rem;
+  }
+
+  .dark {
+    --background: 222.2 84% 4.9%;
+    --foreground: 210 40% 98%;
+    --card: 222.2 84% 4.9%;
+    --card-foreground: 210 40% 98%;
+    --popover: 222.2 84% 4.9%;
+    --popover-foreground: 210 40% 98%;
+    --primary: 217.2 91.2% 59.8%;
+    --primary-foreground: 222.2 47.4% 11.2%;
+    --secondary: 217.2 32.6% 17.5%;
+    --secondary-foreground: 210 40% 98%;
+    --muted: 217.2 32.6% 17.5%;
+    --muted-foreground: 215 20.2% 65.1%;
+    --accent: 217.2 32.6% 17.5%;
+    --accent-foreground: 210 40% 98%;
+    --destructive: 0 62.8% 30.6%;
+    --destructive-foreground: 210 40% 98%;
+    --border: 217.2 32.6% 17.5%;
+    --input: 217.2 32.6% 17.5%;
+    --ring: 224.3 76.3% 48%;
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+  body {
+    @apply bg-background text-foreground;
+    font-feature-settings: "rlig" 1, "calt" 1;
+  }
+}
+
+@layer components {
+  /* 自定义滚动条 */
+  .custom-scrollbar::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+  }
+
+  .custom-scrollbar::-webkit-scrollbar-track {
+    @apply bg-muted;
+  }
+
+  .custom-scrollbar::-webkit-scrollbar-thumb {
+    @apply bg-muted-foreground/30 rounded-md;
+  }
+
+  .custom-scrollbar::-webkit-scrollbar-thumb:hover {
+    @apply bg-muted-foreground/50;
+  }
+
+  /* Markdown 样式 */
+  .prose-markdown {
+    @apply text-base leading-relaxed;
+  }
+
+  .prose-markdown h1,
+  .prose-markdown h2,
+  .prose-markdown h3 {
+    @apply font-bold tracking-tight text-foreground;
+  }
+
+  .prose-markdown h1 {
+    @apply text-3xl mb-6 mt-8 pb-2 border-b;
+  }
+
+  .prose-markdown h2 {
+    @apply text-2xl mb-4 mt-6 pb-1 border-b border-border/50;
+  }
+
+  .prose-markdown h3 {
+    @apply text-xl mb-3 mt-4;
+  }
+
+  .prose-markdown h4 {
+    @apply text-lg mb-2 mt-3 font-semibold;
+  }
+
+  .prose-markdown p {
+    @apply mb-4 leading-7 text-foreground/90;
+  }
+
+  .prose-markdown a {
+    @apply text-primary font-medium hover:underline underline-offset-2;
+  }
+
+  .prose-markdown ul {
+    @apply ml-6 mb-4 list-disc space-y-2;
+  }
+
+  .prose-markdown ol {
+    @apply ml-6 mb-4 list-decimal space-y-2;
+  }
+
+  .prose-markdown li {
+    @apply leading-7;
+  }
+
+  .prose-markdown blockquote {
+    @apply border-l-4 border-primary/50 bg-muted/50 pl-4 py-2 italic my-4 rounded-r text-foreground/80;
+  }
+
+  .prose-markdown code {
+    @apply bg-muted px-2 py-1 rounded text-sm font-mono text-foreground/90 border border-border/50;
+  }
+
+  .prose-markdown pre {
+    @apply bg-muted/80 p-4 rounded-lg overflow-x-auto mb-4 border border-border/50;
+  }
+
+  .prose-markdown pre code {
+    @apply bg-transparent p-0 border-none;
+  }
+
+  .prose-markdown strong {
+    @apply font-bold text-foreground;
+  }
+
+  .prose-markdown em {
+    @apply italic;
+  }
+
+  .prose-markdown hr {
+    @apply my-6 border-t border-border;
+  }
+
+  .prose-markdown table {
+    @apply w-full my-4 border-collapse border border-border/50 rounded-lg overflow-hidden;
+  }
+
+  .prose-markdown th {
+    @apply bg-muted/80 px-4 py-2 text-left font-semibold border-b border-border/50;
+  }
+
+  .prose-markdown td {
+    @apply px-4 py-2 border-b border-border/30;
+  }
+
+  .prose-markdown img {
+    @apply rounded-lg my-4;
+  }
+
+  /* 引用标记样式 */
+  .citation-link {
+    @apply text-primary text-xs font-mono cursor-pointer hover:underline;
+  }
+
+  .citation-link:hover {
+    @apply text-primary/70;
+  }
+}
