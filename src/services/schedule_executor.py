@@ -48,6 +48,8 @@ class ScheduleExecutor:
                     await self._execute_article_crawl(db, schedule)
                 elif schedule["schedule_type"] == "keyword_search":
                     await self._execute_keyword_search(db, schedule)
+                elif schedule["schedule_type"] == "cleanup_low_quality":
+                    await self._execute_cleanup_low_quality(db, schedule)
                 else:
                     raise ValueError(f"未知的任务类型: {schedule['schedule_type']}")
 
@@ -401,3 +403,32 @@ class ScheduleExecutor:
         logger.info(
             f"所有关键词搜索完成: 共 {len(keywords)} 个, 搜索到 {total_searched} 篇, 保存 {total_saved} 篇"
         )
+
+    async def _execute_cleanup_low_quality(self, db, schedule: dict) -> None:
+        """执行清理低质量内容任务"""
+        from src.services.task_executors import CleanupLowQualityExecutor
+
+        logger.info("开始执行清理低质量内容任务")
+
+        executor = CleanupLowQualityExecutor()
+
+        try:
+            result = await executor.execute(
+                task_id=0,  # 调度任务不需要 task_id
+                params={},
+                on_progress=None,
+                on_event=None,
+                check_cancelled=None,
+            )
+
+            article_marked = result.get("article_marked", 0)
+            pending_marked = result.get("pending_marked", 0)
+            total_marked = result.get("success", 0)
+
+            logger.info(
+                f"清理低质量内容完成: 文章 {article_marked} 篇, 待爬文章 {pending_marked} 条, 共 {total_marked} 条"
+            )
+
+        except Exception as e:
+            logger.error(f"清理低质量内容失败: {e}")
+            raise

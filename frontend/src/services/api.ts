@@ -197,6 +197,15 @@ export const articlesApi = {
     searchParams.append("page_size", String(params.page_size))
     if (params.sort_by) searchParams.append("sort_by", params.sort_by)
     if (params.sort_order) searchParams.append("sort_order", params.sort_order)
+    if (params.status) searchParams.append("status", params.status)
+    if (params.keyword) searchParams.append("keyword", params.keyword)
+    if (params.source_search) searchParams.append("source_search", params.source_search)
+    if (params.fetch_status) searchParams.append("fetch_status", params.fetch_status)
+    if (params.source_ids?.length) searchParams.append("source_ids", params.source_ids.join(","))
+    if (params.date_range?.start) searchParams.append("date_start", params.date_range.start)
+    if (params.date_range?.end) searchParams.append("date_end", params.date_range.end)
+    if (params.publish_time_range?.start) searchParams.append("publish_start", params.publish_time_range.start)
+    if (params.publish_time_range?.end) searchParams.append("publish_end", params.publish_time_range.end)
 
     return request<PaginatedResponse<Article>>(`/articles?${searchParams.toString()}`)
   },
@@ -613,8 +622,19 @@ export const dashboardApi = {
   /**
    * 获取关键词词云
    */
-  getKeywordCloud: (period: "week" | "month", language: "zh" | "kk") =>
+  getKeywordCloud: (period: "today" | "week" | "month", language: "zh" | "kk") =>
     request<KeywordCloudResponse>(`/dashboard/keywords/cloud?period=${period}&language=${language}`),
+
+  /**
+   * 获取统计数据趋势
+   */
+  getTrends: () =>
+    request<{
+      hourly_trends: Array<{ hour: string; count: number }>
+      pending_status_distribution: Array<{ name: string; value: number }>
+      top_titles: Array<{ title: string; count: number }>
+      today_stats: { total: number; processed: number; failed: number }
+    }>("/dashboard/stats/trends"),
 }
 
 /**

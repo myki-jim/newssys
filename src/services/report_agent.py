@@ -148,7 +148,7 @@ class ReportGenerationAgent:
                 },
             )
 
-            # 阶段4：提取重点事件
+            # 阶段4：提取重点事件（使用 AI 生成的关键词进行筛选和排序）
             yield await self._update_state(
                 ReportAgentStage.EXTRACTING_EVENTS,
                 50,
@@ -159,6 +159,7 @@ class ReportGenerationAgent:
             events = await self.event_service.select_top_events(
                 clusters=clusters,
                 max_events=report.max_events,
+                ai_keywords=keywords,  # 传递 AI 生成的关键词
             )
 
             event_count = len(events)

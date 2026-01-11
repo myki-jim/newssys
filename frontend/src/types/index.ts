@@ -120,11 +120,16 @@ export interface Article {
 
 export interface ArticleFilter {
   source_ids?: number[]
+  source_search?: string
   status?: string
   fetch_status?: string
   keyword?: string
   url_hash?: string
   date_range?: {
+    start: string
+    end: string
+  }
+  publish_time_range?: {
     start: string
     end: string
   }
@@ -530,7 +535,7 @@ export interface HealthStatus {
 // 搜索类型
 // ============================================================================
 
-export interface SearchResult {
+export interface SearchResultItem {
   title: string
   url: string
   snippet: string
@@ -558,7 +563,7 @@ export interface ParserDebugResult {
 // ============================================================================
 
 export type TaskStatusType = 'pending' | 'running' | 'completed' | 'failed' | 'cancelled'
-export type TaskTypeType = 'crawl_pending' | 'retry_failed' | 'crawl_source' | 'search_import' | 'sitemap_sync' | 'auto_search'
+export type TaskTypeType = 'crawl_pending' | 'retry_failed' | 'crawl_source' | 'search_import' | 'sitemap_sync' | 'auto_search' | 'cleanup_low_quality'
 export type TaskEventType = 'created' | 'started' | 'progress' | 'completed' | 'failed' | 'cancelled' | 'info'
 
 export interface Task {

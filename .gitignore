@@ -34,6 +34,7 @@ ENV/
 # Environment
 .env
 .env.local
+.env.*
 
 # IDE
 .vscode/
@@ -56,10 +57,26 @@ Thumbs.db
 
 # Logs
 *.log
+logs/
 
 # Screenshots/Docs temp files
 .playwright-mcp/
 backups/
 
-# Keep production env
-!.env.production
+# Deployment & Docker
+*.tar
+*.tar.gz
+*.zip
+docker-images/
+newssys-deploy/
+*.sh
+Dockerfile*
+docker-compose.yml
+.dockerignore
+
+# Build files
+build.sh
+docker-build.sh
+
+# Data directory
+data/

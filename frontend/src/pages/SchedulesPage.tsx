@@ -686,6 +686,7 @@ export default function SchedulesPage() {
                     <SelectItem value="sitemap_crawl">Sitemap爬取</SelectItem>
                     <SelectItem value="article_crawl">文章自动爬取</SelectItem>
                     <SelectItem value="keyword_search">关键词搜索</SelectItem>
+                    <SelectItem value="cleanup_low_quality">清理低质量内容</SelectItem>
                   </SelectContent>
                 </Select>
               </div>

@@ -43,12 +43,15 @@ class SitemapService:
         self.pending_repo = PendingArticleRepository(session)
         self.source_repo = SourceRepository(session)
 
-        # HTTP 客户端配置
+        # HTTP 客户端配置（使用浏览器 User-Agent 避免 403）
         self.client = httpx.AsyncClient(
             timeout=30.0,
             headers={
-                "User-Agent": "Mozilla/5.0 (compatible; NewssysBot/2.0; +https://newssys.example.com/bot)",
-                "Accept": "*/*",
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+                "Accept-Encoding": "gzip, deflate",
+                "Connection": "keep-alive",
             },
             follow_redirects=True,
         )
@@ -300,6 +303,10 @@ class SitemapService:
                         # 处理各种 ISO 格式
                         time_str = time_str.replace("Z", "+00:00")
                         parsed_time = datetime.fromisoformat(time_str)
+
+                        # 如果解析出的时间没有时区信息，添加 UTC 时区
+                        if parsed_time.tzinfo is None:
+                            parsed_time = parsed_time.replace(tzinfo=timezone.utc)
 
                         # 只保留最近30天的文章
                         if parsed_time < cutoff_date:

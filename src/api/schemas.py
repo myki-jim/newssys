@@ -93,11 +93,13 @@ class DateRangeFilter(BaseModel):
 class ArticleFilter(BaseModel):
     """文章筛选条件"""
     source_ids: list[int] | None = Field(default=None, description="源 ID 列表")
+    source_search: str | None = Field(default=None, description="源名称搜索")
     status: str | None = Field(default=None, description="文章状态")
     fetch_status: str | None = Field(default=None, description="抓取状态")
     keyword: str | None = Field(default=None, description="关键词搜索")
     url_hash: str | None = Field(default=None, description="URL 哈希")
-    date_range: DateRangeFilter | None = Field(default=None, description="日期范围")
+    date_range: DateRangeFilter | None = Field(default=None, description="采集时间范围")
+    publish_time_range: DateRangeFilter | None = Field(default=None, description="发布时间范围")
     min_score: float | None = Field(default=None, description="最低影响力分数")
 
 

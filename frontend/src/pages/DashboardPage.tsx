@@ -13,6 +13,10 @@ import { formatFileSize } from "@/lib/utils"
 import { cn } from "@/lib/utils"
 import { Link } from "react-router-dom"
 import { KeywordCloudGrid } from "@/components/dashboard/KeywordCloud"
+import { HotSourcesPieChart } from "@/components/dashboard/HotSourcesPieChart"
+import { StatusDistributionChart } from "@/components/dashboard/StatusDistributionChart"
+import { TrendsChart } from "@/components/dashboard/TrendsChart"
+import { TopTitlesList } from "@/components/dashboard/TopTitlesList"
 
 export function DashboardPage() {
   const { data: stats, isLoading } = useQuery({
@@ -34,6 +38,11 @@ export function DashboardPage() {
   const { data: topSources } = useQuery({
     queryKey: ["dashboard", "topSources"],
     queryFn: () => dashboardApi.getTopSources(5, 7),
+  })
+
+  const { data: trends } = useQuery({
+    queryKey: ["dashboard", "trends"],
+    queryFn: () => dashboardApi.getTrends(),
   })
 
   if (isLoading) {
@@ -178,45 +187,86 @@ export function DashboardPage() {
         </Card>
       )}
 
-      {/* 热门采集源 */}
-      {topSources && topSources.length > 0 && (
+      {/* 数据统计区域 - 4列布局（热门采集源 + 3个统计卡片） */}
+      <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+        {/* 热门采集源 */}
+        {topSources && topSources.length > 0 && (
+          <Card>
+            <CardHeader className="pb-3">
+              <div className="flex items-center justify-between">
+                <CardTitle className="text-base">热门采集源</CardTitle>
+                <Button variant="ghost" size="sm" className="h-7 text-xs" asChild>
+                  <Link to="/sources">全部</Link>
+                </Button>
+              </div>
+            </CardHeader>
+            <CardContent>
+              <HotSourcesPieChart data={topSources} />
+            </CardContent>
+          </Card>
+        )}
+
+        {/* 24小时趋势 */}
         <Card>
-          <CardHeader>
-            <div className="flex items-center justify-between">
-              <CardTitle>热门采集源（本周）</CardTitle>
-              <Button variant="outline" size="sm" asChild>
-                <Link to="/sources">查看全部</Link>
-              </Button>
-            </div>
+          <CardHeader className="pb-3">
+            <CardTitle className="text-base">24小时趋势</CardTitle>
           </CardHeader>
           <CardContent>
-            <div className="space-y-4">
-              {topSources.map((source) => (
-                <div key={source.source_id} className="flex items-center justify-between">
-                  <div className="flex-1">
-                    <div className="flex items-center gap-2">
-                      <span className="font-medium">{source.site_name}</span>
-                      <span className="text-xs text-muted-foreground">
-                        {source.total_articles} 篇
-                      </span>
-                    </div>
-                    <div className="mt-1 h-2 w-full rounded-full bg-muted">
-                      <div
-                        className="h-2 rounded-full bg-primary"
-                        style={{ width: `${source.success_rate}%` }}
-                      />
-                    </div>
-                  </div>
-                  <div className="ml-4 text-sm">
-                    <span className="text-muted-foreground">成功率: </span>
-                    <span className="font-medium">{source.success_rate}%</span>
-                  </div>
-                </div>
-              ))}
-            </div>
+            <TrendsChart data={trends?.hourly_trends || []} />
           </CardContent>
         </Card>
-      )}
+
+        {/* 待爬状态分布 */}
+        <Card>
+          <CardHeader className="pb-3">
+            <CardTitle className="text-base">待爬状态</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <StatusDistributionChart data={trends?.pending_status_distribution || []} />
+          </CardContent>
+        </Card>
+
+        {/* 热门标题 */}
+        <Card>
+          <CardHeader className="pb-3">
+            <CardTitle className="text-base">今日趋势</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <TopTitlesList data={trends?.top_titles || []} limit={5} />
+          </CardContent>
+        </Card>
+      </div>
+
+      {/* 今日统计卡片 */}
+      <Card>
+        <CardHeader className="pb-3">
+          <CardTitle className="text-base">今日统计</CardTitle>
+        </CardHeader>
+        <CardContent>
+          <div className="grid grid-cols-4 gap-6">
+            <div>
+              <p className="text-2xl font-bold">{trends?.today_stats?.total || 0}</p>
+              <p className="text-xs text-muted-foreground">新增文章</p>
+            </div>
+            <div>
+              <p className="text-2xl font-bold text-green-600">{trends?.today_stats?.processed || 0}</p>
+              <p className="text-xs text-muted-foreground">已处理</p>
+            </div>
+            <div>
+              <p className="text-2xl font-bold text-red-600">{trends?.today_stats?.failed || 0}</p>
+              <p className="text-xs text-muted-foreground">失败</p>
+            </div>
+            <div>
+              <p className="text-2xl font-bold text-blue-600">
+                {trends?.today_stats?.total && trends?.today_stats.total > 0
+                  ? Math.round((trends.today_stats.processed / trends.today_stats.total) * 100)
+                  : 0}%
+              </p>
+              <p className="text-xs text-muted-foreground">处理率</p>
+            </div>
+          </div>
+        </CardContent>
+      </Card>
 
       {/* 关键词词云 */}
       <Card>

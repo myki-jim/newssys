@@ -580,7 +580,7 @@ class ArticleRepository(BaseRepository):
         language: str | None = None,
     ) -> list[dict[str, Any]]:
         """
-        根据时间范围获取文章
+        根据时间范围获取文章（过滤掉低质量文章）
 
         Args:
             start_date: 开始时间
@@ -592,8 +592,8 @@ class ArticleRepository(BaseRepository):
         """
         params = {"start_date": start_date, "end_date": end_date}
 
-        # 构建SQL
-        where_clause = "publish_time >= :start_date AND publish_time <= :end_date"
+        # 构建SQL（使用发布时间，过滤掉低质量文章）
+        where_clause = "publish_time >= :start_date AND publish_time <= :end_date AND status != 'low_quality'"
 
         # 如果需要语言筛选（可以根据源或其他字段判断）
         # 这里暂时不实现语言筛选，因为 articles 表没有 language 字段

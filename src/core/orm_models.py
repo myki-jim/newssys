@@ -204,6 +204,7 @@ class PendingArticleStatus(str, Enum):
     COMPLETED = "completed"
     FAILED = "failed"
     ABANDONED = "abandoned"  # 已遗弃（重试失败后不再处理）
+    LOW_QUALITY = "low_quality"  # 低质量（标记为低质量，不再爬取）
 
 
 class SitemapOrm(Base):

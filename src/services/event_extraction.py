@@ -234,29 +234,142 @@ class EventSelectionService:
     """
     事件选择服务
     从聚类结果中选择最重要的 N 个事件
+    支持基于 AI 生成的关键词进行相关性筛选和评分
     """
 
     def __init__(self):
         self.extractor = EventExtractor()
 
+    def _calculate_keyword_relevance(
+        self,
+        event_info: dict[str, Any],
+        ai_keywords: list[str],
+    ) -> float:
+        """
+        计算事件与 AI 生成关键词的匹配度
+
+        Args:
+            event_info: 事件信息（包含从聚类中提取的关键词）
+            ai_keywords: AI 生成的关键词列表
+
+        Returns:
+            关键词匹配度分数 (0-1)
+        """
+        if not ai_keywords:
+            return 0.5  # 无关键词时给予中等分数
+
+        event_keywords = event_info.get("keywords", [])
+        if not event_keywords:
+            return 0.0
+
+        # 计算匹配度
+        matched_count = 0
+        partial_match_count = 0
+
+        ai_keywords_lower = [kw.lower() for kw in ai_keywords]
+        event_keywords_lower = [kw.lower() for kw in event_keywords]
+
+        for ai_kw in ai_keywords_lower:
+            # 完全匹配
+            if ai_kw in event_keywords_lower:
+                matched_count += 1
+            # 部分匹配（AI关键词包含事件关键词的一部分）
+            else:
+                for event_kw in event_keywords_lower:
+                    if ai_kw in event_kw or event_kw in ai_kw:
+                        partial_match_count += 1
+                        break
+
+        # 完全匹配权重更高
+        total_keywords = len(ai_keywords)
+        if total_keywords == 0:
+            return 0.0
+
+        relevance_score = (
+            (matched_count * 1.0 + partial_match_count * 0.5) / total_keywords
+        )
+
+        return min(relevance_score, 1.0)
+
+    def _calculate_keyword_relevance_from_articles(
+        self,
+        all_articles: list[dict[str, Any]],
+        ai_keywords: list[str],
+    ) -> float:
+        """
+        从文章内容计算与 AI 关键词的匹配度
+
+        Args:
+            all_articles: 聚类中的所有文章
+            ai_keywords: AI 生成的关键词列表
+
+        Returns:
+            关键词匹配度分数 (0-1)
+        """
+        if not ai_keywords:
+            return 0.5
+
+        # 合并所有文章的标题和内容
+        all_text = ""
+        for article in all_articles:
+            title = article.get("title", "") or ""
+            content = article.get("content", "") or ""
+            all_text += title + " " + content[:500] + " "
+
+        all_text_lower = all_text.lower()
+
+        # 统计关键词出现次数
+        match_count = 0
+        for keyword in ai_keywords:
+            if keyword.lower() in all_text_lower:
+                match_count += 1
+
+        return match_count / len(ai_keywords)
+
     async def select_top_events(
         self,
         clusters: list,  # list[ArticleCluster]
         max_events: int = 20,
+        ai_keywords: list[str] | None = None,
     ) -> list[dict[str, Any]]:
         """
-        选择最重要的 N 个事件
+        选择最重要的 N 个事件（支持基于 AI 关键词的筛选和评分）
 
         Args:
             clusters: 文章聚类列表
-            max_events: 最大事件数量
+            max_events: 最大事件数量（用户设置的封顶值）
+            ai_keywords: AI 生成的关键词列表（可选）
 
         Returns:
             事件列表（按重要性排序）
+            注意：最少返回 15 个事件，最多返回 max_events 个事件
         """
+        # 确保至少返回 15 个事件，最多返回用户设置的 max_events
+        actual_max_events = max(15, max_events)
+        logger.info(f"事件数量设置：用户设置={max_events}，实际使用={actual_max_events}（最少15个）")
         events = []
+        filtered_clusters = []
 
-        for cluster in clusters:
+        # 第一层：使用关键词过滤相关聚类
+        if ai_keywords:
+            logger.info(f"使用 AI 生成的 {len(ai_keywords)} 个关键词进行筛选")
+            for cluster in clusters:
+                # 从聚类内容计算关键词匹配度
+                all_articles = [cluster.representative] + cluster.duplicates
+                relevance = self._calculate_keyword_relevance_from_articles(
+                    all_articles, ai_keywords
+                )
+                # 只保留匹配度大于阈值的聚类
+                if relevance >= 0.2:  # 至少20%的匹配度
+                    filtered_clusters.append((cluster, relevance))
+                else:
+                    logger.debug(f"聚类匹配度 {relevance:.2f} < 0.2，已过滤")
+        else:
+            filtered_clusters = [(cluster, 0.5) for cluster in clusters]
+
+        logger.info(f"关键词筛选后剩余 {len(filtered_clusters)} 个聚类（原始 {len(clusters)} 个）")
+
+        for cluster, initial_relevance in filtered_clusters:
             # 获取聚类中的所有文章
             all_articles = [cluster.representative] + cluster.duplicates
 
@@ -266,33 +379,56 @@ class EventSelectionService:
                 cluster_articles=all_articles,
             )
 
-            # 计算重要性
+            # 计算词频评分（原始 importance）
             content_length = sum(
                 len(a.get("content") or "")
                 for a in all_articles
             )
 
-            importance = self.extractor.calculate_event_importance(
+            tfidf_importance = self.extractor.calculate_event_importance(
                 event=event_info,
                 cluster_size=cluster.total_count,
                 content_length=content_length,
             )
 
+            # 计算关键词匹配度
+            keyword_relevance = self._calculate_keyword_relevance(
+                event_info, ai_keywords or []
+            )
+
+            # 混合评分：词频评分 60% + 关键词匹配度 40%
+            if ai_keywords:
+                combined_importance = tfidf_importance * 0.6 + keyword_relevance * 0.4
+            else:
+                combined_importance = tfidf_importance
+
             events.append({
                 **event_info,
                 "article_count": cluster.total_count,
                 "content_length": content_length,
-                "importance": importance,  # 统一字段名为 importance
-                "importance_score": importance,  # 保持兼容性
+                "importance": combined_importance,  # 统一字段名为 importance
+                "importance_score": combined_importance,  # 保持兼容性
+                "tfidf_score": tfidf_importance,  # 词频评分
+                "keyword_relevance": keyword_relevance,  # 关键词匹配度
                 "representative_article_id": cluster.representative_id,
                 "article_ids": [cluster.representative_id] + cluster.duplicate_ids,
             })
 
-        # 按重要性排序并取前 N 个
-        events.sort(key=lambda e: e["importance_score"], reverse=True)
-        top_events = events[:max_events]
+            logger.debug(
+                f"事件 '{event_info['event_title'][:30]}...': "
+                f"TF-IDF={tfidf_importance:.2f}, "
+                f"关键词匹配={keyword_relevance:.2f}, "
+                f"综合={combined_importance:.2f}"
+            )
 
-        logger.info(f"从 {len(clusters)} 个聚类中选择了 {len(top_events)} 个重点事件")
+        # 按混合重要性排序并取前 N 个
+        events.sort(key=lambda e: e["importance_score"], reverse=True)
+        top_events = events[:actual_max_events]
+
+        logger.info(
+            f"从 {len(clusters)} 个聚类中选择了 {len(top_events)} 个重点事件 "
+            f"(关键词筛选后 {len(filtered_clusters)} 个，用户上限={max_events})"
+        )
 
         return top_events
 

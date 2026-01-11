@@ -36,9 +36,10 @@ async def lifespan(app: FastAPI) -> AsyncGenerator:
     logger.info("Starting 新闻态势分析系统 API...")
 
     # 启动时的初始化逻辑
-    # TODO: 初始化数据库连接池
-    # TODO: 初始化 AI 客户端
-    # TODO: 初始化搜索引擎
+    # 初始化数据库连接池和表
+    from src.core.database import init_database
+    await init_database()
+    logger.info("数据库初始化完成")
 
     # 启动调度器
     from src.services.scheduler_service import start_scheduler
@@ -147,6 +148,7 @@ async def general_exception_handler(request: Request, exc: Exception) -> JSONRes
 
 
 @app.get("/api/health")
+@app.get("/api/v1/health")
 async def health_check():
     """健康检查"""
     return {
@@ -166,6 +168,20 @@ async def root():
         "success": True,
         "data": {
             "message": "新闻态势分析系统 API",
+            "version": "2.0.0",
+            "docs": "/api/docs",
+        },
+    }
+
+
+@app.post("/api/")
+@app.post("/api/v1/")
+async def api_root():
+    """API 根路由 POST"""
+    return {
+        "success": True,
+        "data": {
+            "message": "新闻态势分析系统 API v1",
             "version": "2.0.0",
             "docs": "/api/docs",
         },

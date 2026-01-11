@@ -123,7 +123,7 @@ class PendingArticleRepository(BaseRepository):
         offset: int = 0,
     ) -> list[dict[str, Any]]:
         """
-        获取指定源的待爬文章
+        获取指定源的待爬文章（自动过滤低质量文章）
 
         按发布时间倒序排列（最新的优先），没有发布时间的排在最后
 
@@ -137,7 +137,7 @@ class PendingArticleRepository(BaseRepository):
             文章列表
         """
         params: dict[str, Any] = {"source_id": source_id, "limit": limit, "offset": offset}
-        where_clause = "source_id = :source_id"
+        where_clause = "source_id = :source_id AND status != 'low_quality'"
 
         if status is not None:
             where_clause += " AND status = :status"
@@ -158,7 +158,7 @@ class PendingArticleRepository(BaseRepository):
         status: PendingArticleStatus | None = None,
     ) -> list[dict[str, Any]]:
         """
-        获取指定 Sitemap 的待爬文章
+        获取指定 Sitemap 的待爬文章（自动过滤低质量文章）
 
         按发布时间倒序排列（最新的优先），没有发布时间的排在最后
 
@@ -170,7 +170,7 @@ class PendingArticleRepository(BaseRepository):
             文章列表
         """
         params: dict[str, Any] = {"sitemap_id": sitemap_id}
-        where_clause = "sitemap_id = :sitemap_id"
+        where_clause = "sitemap_id = :sitemap_id AND status != 'low_quality'"
 
         if status is not None:
             where_clause += " AND status = :status"
@@ -251,7 +251,7 @@ class PendingArticleRepository(BaseRepository):
         self, source_id: int | None = None, status: PendingArticleStatus | None = None
     ) -> int:
         """
-        统计指定状态的文章数量
+        统计指定状态的文章数量（自动过滤低质量文章）
 
         Args:
             source_id: 源 ID（可选）
@@ -260,7 +260,7 @@ class PendingArticleRepository(BaseRepository):
         Returns:
             文章数量
         """
-        where_clauses = []
+        where_clauses = ["status != 'low_quality'"]
         params = {}
 
         if source_id is not None:
@@ -271,6 +271,6 @@ class PendingArticleRepository(BaseRepository):
             where_clauses.append("status = :status")
             params["status"] = status.value
 
-        where_clause = " AND ".join(where_clauses) if where_clauses else "1=1"
+        where_clause = " AND ".join(where_clauses)
 
         return await self.count(self.TABLE_NAME, where_clause, params)

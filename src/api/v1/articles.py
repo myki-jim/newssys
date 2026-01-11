@@ -65,12 +65,20 @@ async def list_articles(
     where_clauses = []
     params: dict[str, Any] = {}
 
+    # 默认过滤掉低质量文章
+    where_clauses.append("status != 'low_quality'")
+
     # 来源筛选
     if filter.source_ids:
         placeholders = ', '.join(f':sid_{i}' for i in range(len(filter.source_ids)))
         where_clauses.append(f"source_id IN ({placeholders})")
         for i, sid in enumerate(filter.source_ids):
             params[f'sid_{i}'] = sid
+
+    # 源名称搜索
+    if filter.source_search:
+        where_clauses.append("source_id IN (SELECT id FROM crawl_sources WHERE site_name LIKE :source_search)")
+        params["source_search"] = f"%{filter.source_search}%"
 
     # 状态筛选
     if filter.status:
@@ -91,7 +99,7 @@ async def list_articles(
         where_clauses.append("url_hash = :url_hash")
         params["url_hash"] = filter.url_hash
 
-    # 日期范围
+    # 日期范围（采集时间 created_at）
     if filter.date_range:
         if filter.date_range.start:
             where_clauses.append("created_at >= :date_start")
@@ -99,6 +107,15 @@ async def list_articles(
         if filter.date_range.end:
             where_clauses.append("created_at <= :date_end")
             params["date_end"] = filter.date_range.end
+
+    # 发布时间范围
+    if filter.publish_time_range:
+        if filter.publish_time_range.start:
+            where_clauses.append("publish_time >= :publish_start")
+            params["publish_start"] = filter.publish_time_range.start
+        if filter.publish_time_range.end:
+            where_clauses.append("publish_time <= :publish_end")
+            params["publish_end"] = filter.publish_time_range.end
 
     # 构建完整 SQL
     where_clause = " AND ".join(where_clauses) if where_clauses else "1=1"
@@ -800,55 +817,106 @@ async def cleanup_articles(
     db: AsyncSession = Depends(get_db),
 ):
     """
-    清理低质量文章
+    标记低质量文章和待爬文章（不删除，仅标记状态）
 
-    清理条件:
+    文章标记条件:
     1. 内容长度 < 50 字符
     2. 没有发布时间 (publish_time IS NULL)
     3. 发布时间在一年之外 (publish_time < now() - 365 days OR publish_time > now() + 365 days)
+
+    待爬文章标记条件:
+    1. 没有发布时间 (publish_time IS NULL)
+    2. 发布时间在一年之外 (publish_time < now() - 365 days OR publish_time > now() + 365 days)
+
+    标记后的文章/待爬文章将被隐藏，不会参与任何操作或爬取
     """
     from datetime import timedelta
+    from src.repository.pending_article_repository import PendingArticleRepository
 
-    repo = ArticleRepository(db)
+    article_repo = ArticleRepository(db)
+    pending_repo = PendingArticleRepository(db)
 
     # 计算一年前和一年后的时间
     one_year_ago = datetime.now() - timedelta(days=365)
     one_year_future = datetime.now() + timedelta(days=365)
 
-    # 构建清理 SQL
-    cleanup_sql = """
-        SELECT id FROM articles WHERE
-            LENGTH(COALESCE(content, '')) < 50
-            OR publish_time IS NULL
-            OR publish_time < :one_year_ago
-            OR publish_time > :one_year_future
-    """
-
-    # 查询需要清理的文章
-    articles_to_cleanup = await repo.fetch_all(
-        cleanup_sql,
-        {"one_year_ago": one_year_ago, "one_year_future": one_year_future}
-    )
-
     success_count = 0
     failed_count = 0
     errors = []
+    pending_marked_count = 0
 
-    for article in articles_to_cleanup:
+    # 1. 标记低质量文章（articles表）
+    find_low_quality_sql = """
+        SELECT id FROM articles WHERE
+            status != 'low_quality'
+            AND (
+                LENGTH(COALESCE(content, '')) < 50
+                OR publish_time IS NULL
+                OR publish_time < :one_year_ago
+                OR publish_time > :one_year_future
+            )
+        LIMIT 10000
+    """
+
+    articles_to_mark = await article_repo.fetch_all(
+        find_low_quality_sql,
+        {"one_year_ago": one_year_ago, "one_year_future": one_year_future}
+    )
+
+    # 批量更新文章状态
+    for article in articles_to_mark:
         try:
-            await repo.delete(article["id"])
+            await article_repo.update(
+                article["id"],
+                {"status": "low_quality"}
+            )
             success_count += 1
         except Exception as e:
-            logger.error(f"Failed to delete article {article['id']}: {e}")
+            logger.error(f"Failed to mark article {article['id']} as low_quality: {e}")
             errors.append({"id": article["id"], "error": str(e)})
             failed_count += 1
 
-    logger.info(f"Cleaned up {success_count} articles, {failed_count} failed")
+    # 2. 标记低质量待爬文章（pending_articles表）
+    find_low_pending_sql = """
+        SELECT id FROM pending_articles WHERE
+            status != 'low_quality'
+            AND (
+                publish_time IS NULL
+                OR publish_time < :one_year_ago
+                OR publish_time > :one_year_future
+            )
+        LIMIT 50000
+    """
+
+    pending_to_mark = await pending_repo.fetch_all(
+        find_low_pending_sql,
+        {"one_year_ago": one_year_ago, "one_year_future": one_year_future}
+    )
+
+    # 批量更新待爬文章状态
+    for pending in pending_to_mark:
+        try:
+            await pending_repo.update(
+                pending["id"],
+                {"status": "low_quality"}
+            )
+            pending_marked_count += 1
+        except Exception as e:
+            logger.error(f"Failed to mark pending article {pending['id']} as low_quality: {e}")
+            errors.append({"id": pending["id"], "error": str(e)})
+            failed_count += 1
+
+    total_marked = success_count + pending_marked_count
+
+    logger.info(
+        f"Marked {success_count} articles and {pending_marked_count} pending articles as low_quality, "
+        f"{failed_count} failed"
+    )
 
     return APIResponse(
         success=True,
         data=BulkOperationResponse(
-            success_count=success_count,
+            success_count=total_marked,
             failed_count=failed_count,
             errors=errors,
         ),

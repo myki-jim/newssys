@@ -5,6 +5,7 @@
 
 import logging
 from collections.abc import Callable
+from datetime import datetime, timedelta
 from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -390,9 +391,145 @@ class SitemapSyncExecutor(TaskExecutor):
                 await service.close()
 
 
+class CleanupLowQualityExecutor(TaskExecutor):
+    """
+    清理低质量内容执行器
+    同时清理 articles 表和 pending_articles 表中的低质量数据
+    """
+
+    async def execute(
+        self,
+        task_id: int,
+        params: dict[str, Any],
+        on_progress: Callable[[int, int, str | None], None] | None = None,
+        on_event: Callable[[TaskEventType, dict[str, Any] | None], None] | None = None,
+        check_cancelled: Callable[[], bool] | None = None,
+    ) -> dict[str, Any]:
+        """
+        执行清理低质量内容任务
+
+        Args:
+            task_id: 任务 ID
+            params: 任务参数 (无额外参数)
+            on_progress: 进度回调
+            on_event: 事件回调
+            check_cancelled: 取消检查回调
+
+        Returns:
+            任务结果
+        """
+        from datetime import timedelta
+
+        print(f"[CleanupLowQualityExecutor] 开始执行任务 {task_id}")
+
+        # 创建新的数据库会话
+        from src.core.database import get_async_session
+
+        async with get_async_session() as db:
+            article_repo = ArticleRepository(db)
+            pending_repo = PendingArticleRepository(db)
+
+            try:
+                if on_event:
+                    on_event(
+                        TaskEventType.STARTED,
+                        {"message": "开始清理低质量内容"},
+                    )
+
+                if on_progress:
+                    on_progress(10, 100, "正在清理文章...")
+
+                # 计算时间阈值
+                one_year_ago = datetime.now() - timedelta(days=365)
+                one_year_future = datetime.now() + timedelta(days=365)
+
+                # 1. 清理文章
+                find_low_quality_sql = """
+                    SELECT id FROM articles WHERE
+                        status != 'low_quality'
+                        AND (
+                            LENGTH(COALESCE(content, '')) < 50
+                            OR publish_time IS NULL
+                            OR publish_time < :one_year_ago
+                            OR publish_time > :one_year_future
+                        )
+                    LIMIT 10000
+                """
+
+                articles_to_mark = await article_repo.fetch_all(
+                    find_low_quality_sql,
+                    {"one_year_ago": one_year_ago, "one_year_future": one_year_future}
+                )
+
+                article_marked = 0
+                for article in articles_to_mark:
+                    await article_repo.update(article["id"], {"status": "low_quality"})
+                    article_marked += 1
+
+                print(f"[CleanupLowQualityExecutor] 标记了 {article_marked} 篇文章为低质量")
+
+                if on_progress:
+                    on_progress(60, 100, f"已标记 {article_marked} 篇文章，正在清理待爬文章...")
+
+                # 2. 清理待爬文章
+                find_low_pending_sql = """
+                    SELECT id FROM pending_articles WHERE
+                        status != 'low_quality'
+                        AND (
+                            publish_time IS NULL
+                            OR publish_time < :one_year_ago
+                            OR publish_time > :one_year_future
+                        )
+                    LIMIT 50000
+                """
+
+                pending_to_mark = await pending_repo.fetch_all(
+                    find_low_pending_sql,
+                    {"one_year_ago": one_year_ago, "one_year_future": one_year_future}
+                )
+
+                pending_marked = 0
+                for pending in pending_to_mark:
+                    await pending_repo.update_status(pending["id"], PendingArticleStatus.LOW_QUALITY)
+                    pending_marked += 1
+
+                print(f"[CleanupLowQualityExecutor] 标记了 {pending_marked} 条待爬文章为低质量")
+
+                if on_progress:
+                    on_progress(100, 100, "清理完成")
+
+                if on_event:
+                    on_event(
+                        TaskEventType.COMPLETED,
+                        {
+                            "message": f"清理完成：标记了 {article_marked} 篇文章和 {pending_marked} 条待爬文章",
+                            "article_marked": article_marked,
+                            "pending_marked": pending_marked,
+                            "total_marked": article_marked + pending_marked,
+                        },
+                    )
+
+                return {
+                    "success": article_marked + pending_marked,
+                    "article_marked": article_marked,
+                    "pending_marked": pending_marked,
+                    "message": f"成功标记 {article_marked} 篇文章和 {pending_marked} 条待爬文章为低质量",
+                }
+
+            except Exception as e:
+                logger.error(f"[CleanupLowQualityExecutor] 清理失败: {e}", exc_info=True)
+                if on_event:
+                    on_event(
+                        TaskEventType.FAILED,
+                        {"message": f"清理失败: {str(e)}"},
+                    )
+                raise
+
+
 # 注册执行器
 from src.services.task_manager import TaskExecutorRegistry
 
 TaskExecutorRegistry.register("crawl_pending", CrawlPendingExecutor)
 TaskExecutorRegistry.register("retry_failed", RetryFailedExecutor)
 TaskExecutorRegistry.register("sitemap_sync", SitemapSyncExecutor)
+TaskExecutorRegistry.register("cleanup_low_quality", CleanupLowQualityExecutor)
