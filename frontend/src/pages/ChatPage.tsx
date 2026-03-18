@@ -19,10 +19,39 @@ export function ChatPage() {
   const [isStreaming, setIsStreaming] = useState(false)
   const [currentResponse, setCurrentResponse] = useState("")
   const [streamingConversationId, setStreamingConversationId] = useState<number | null>(null)
+  const [pendingUserMessage, setPendingUserMessage] = useState<{ content: string; created_at: string } | null>(null)
   const messagesEndRef = useRef<HTMLDivElement>(null)
 
+  const resolveMode = () => {
+    if (webSearchEnabled && internalSearchEnabled) return "agent_both"
+    if (webSearchEnabled) return "agent_web"
+    if (internalSearchEnabled) return "agent_internal"
+    return "chat"
+  }
+
+  const renderStreamingText = (text: string, animated: boolean) => {
+    if (!animated) {
+      return <div className="text-sm whitespace-pre-wrap">{text}</div>
+    }
+
+    return (
+      <div className="text-sm whitespace-pre-wrap">
+        {Array.from(text).map((char, index) => {
+          if (char === "\n") {
+            return <br key={`br-${index}`} />
+          }
+          return (
+            <span key={`char-${index}`} className="_fadeIn">
+              {char === " " ? "\u00A0" : char}
+            </span>
+          )
+        })}
+      </div>
+    )
+  }
+
   // 获取对话列表 - 只在需要时刷新
-  const { data: conversations, isLoading: conversationsLoading } = useQuery({
+  const { data: conversations, isLoading: conversationsLoading } = useQuery<Conversation[]>({
     queryKey: ["conversations"],
     queryFn: async () => {
       const res = await fetch("/api/v1/conversations")
@@ -32,7 +61,7 @@ export function ChatPage() {
   })
 
   // 获取当前对话的消息 - 只在需要时刷新
-  const { data: messages, isLoading: messagesLoading } = useQuery({
+  const { data: messages, isLoading: messagesLoading } = useQuery<Message[]>({
     queryKey: ["messages", selectedConversationId],
     queryFn: async () => {
       if (!selectedConversationId) return []
@@ -49,6 +78,10 @@ export function ChatPage() {
       setIsStreaming(true)
       setCurrentResponse("")
       setAgentState(null)
+      setPendingUserMessage({
+        content: message,
+        created_at: new Date().toISOString(),
+      })
 
       const response = await fetch("/api/v1/conversations/chat/stream", {
         method: "POST",
@@ -56,6 +89,7 @@ export function ChatPage() {
         body: JSON.stringify({
           conversation_id: selectedConversationId,
           message,
+          mode: resolveMode(),
           web_search_enabled: webSearchEnabled,
           internal_search_enabled: internalSearchEnabled,
         }),
@@ -88,6 +122,7 @@ export function ChatPage() {
             if (event.type === "start") {
               tempConversationId = event.conversation_id
               setStreamingConversationId(event.conversation_id)
+              setSelectedConversationId(event.conversation_id)
             } else if (event.type === "state") {
               setAgentState(event.data)
             } else if (event.type === "chunk") {
@@ -95,9 +130,12 @@ export function ChatPage() {
               fullResponse += text
               setCurrentResponse(fullResponse)
             } else if (event.type === "end") {
-              // 不自动切换对话，只刷新列表
-              queryClient.invalidateQueries({ queryKey: ["conversations"] })
-              queryClient.invalidateQueries({ queryKey: ["messages"] })
+              setIsStreaming(false)
+              if (tempConversationId) {
+                setSelectedConversationId(tempConversationId)
+                await queryClient.invalidateQueries({ queryKey: ["messages", tempConversationId] })
+              }
+              await queryClient.invalidateQueries({ queryKey: ["conversations"] })
             } else if (event.type === "error") {
               throw new Error(event.data.error)
             }
@@ -116,13 +154,15 @@ export function ChatPage() {
       setIsStreaming(false)
       setAgentState(null)
       setStreamingConversationId(null)
-      queryClient.invalidateQueries({ queryKey: ["conversations"] })
-      queryClient.invalidateQueries({ queryKey: ["messages"] })
+      setPendingUserMessage(null)
+      setCurrentResponse("")
     },
     onError: () => {
       setIsStreaming(false)
       setAgentState(null)
       setStreamingConversationId(null)
+      setPendingUserMessage(null)
+      setCurrentResponse("")
     },
   })
 
@@ -146,6 +186,7 @@ export function ChatPage() {
     setSelectedConversationId(null)
     setAgentState(null)
     setCurrentResponse("")
+    setPendingUserMessage(null)
   }
 
   // 发送消息
@@ -162,6 +203,14 @@ export function ChatPage() {
 
   const currentConversation = conversations?.find((c) => c.id === selectedConversationId)
   const displayMessages = messages || []
+  const latestPersistedMessage = displayMessages[displayMessages.length - 1]
+  const shouldRenderPendingUserMessage = Boolean(
+    pendingUserMessage
+    && !(
+      latestPersistedMessage?.role === "user"
+      && latestPersistedMessage.content === pendingUserMessage.content
+    )
+  )
 
   // 渲染搜索结果来源
   const renderSources = (agentState: AgentState | null | undefined) => {
@@ -426,7 +475,7 @@ export function ChatPage() {
 
         {/* 消息列表 */}
         <div className="flex-1 overflow-y-auto p-4 space-y-4">
-          {!selectedConversationId && !currentResponse && !isStreaming && (
+          {!selectedConversationId && !shouldRenderPendingUserMessage && !currentResponse && !isStreaming && (
             <div className="flex items-center justify-center h-full text-muted-foreground">
               <div className="text-center">
                 <MessageSquare className="h-12 w-12 mx-auto mb-4 opacity-50" />
@@ -460,6 +509,18 @@ export function ChatPage() {
             </div>
           ))}
 
+          {shouldRenderPendingUserMessage && pendingUserMessage && (
+            <div className="flex justify-end">
+              <Card className="max-w-[80%] p-3 bg-primary text-primary-foreground">
+                <div className="text-sm whitespace-pre-wrap">{pendingUserMessage.content}</div>
+                <div className="text-xs opacity-50 mt-2 flex items-center gap-1">
+                  <Clock className="h-3 w-3" />
+                  {formatDateTime(pendingUserMessage.created_at)}
+                </div>
+              </Card>
+            </div>
+          )}
+
           {/* Agent 流程状态指示器 */}
           {agentState && (
             <div className="flex justify-center">
@@ -488,7 +549,7 @@ export function ChatPage() {
           {currentResponse && (
             <div className="flex justify-start">
               <Card className="max-w-[80%] p-3 bg-muted">
-                <div className="text-sm whitespace-pre-wrap">{currentResponse}</div>
+                {renderStreamingText(currentResponse, isStreaming)}
                 {isStreaming && (
                   <div className="flex items-center gap-2 mt-2 text-xs text-muted-foreground">
                     <Loader2 className="h-3 w-3 animate-spin" />

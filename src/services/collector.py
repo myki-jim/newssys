@@ -440,8 +440,8 @@ class NewsCollector:
 
         # 执行更新
         from src.repository.base import BaseRepository
-        base_repo = BaseRepository()
-        await base_repo.execute_write(sql, params)
+        async with BaseRepository() as base_repo:
+            await base_repo.execute_write(sql, params)
 
     async def run_by_source(self, source_id: int) -> dict[str, Any]:
         """

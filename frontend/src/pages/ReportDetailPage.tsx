@@ -27,9 +27,37 @@ import ReactMarkdown from "react-markdown"
 import remarkGfm from "remark-gfm"
 import rehypeRaw from "rehype-raw"
 import rehypeSanitize from "rehype-sanitize"
-import type { Report, ReportSSEEvent } from "@/types"
+import type { Report } from "@/types"
 
 const AUTO_REFRESH_INTERVAL = 3000 // 3秒自动刷新（详情页更快）
+
+type ClusterProgress = {
+  current: number
+  total: number
+  comparisons: number
+  cluster_count: number
+} | null
+
+function formatReportArticleStats(report: Report) {
+  if (report.status === "generating") {
+    const total = report.total_articles > 0 ? `${report.total_articles} 篇` : "统计中"
+    const deduplicated = report.clustered_articles > 0 ? `${report.clustered_articles} 篇` : "处理中"
+    return `${total} → ${deduplicated}`
+  }
+
+  if (report.clustered_articles > 0) {
+    return `${report.total_articles} 篇 → ${report.clustered_articles} 篇`
+  }
+
+  return `${report.total_articles} 篇`
+}
+
+function formatReportEventStats(report: Report) {
+  if (report.status === "generating" && report.event_count <= 0) {
+    return "处理中"
+  }
+  return `${report.event_count} 个`
+}
 
 export function ReportDetailPage() {
   const { reportId } = useParams<{ reportId: string }>()
@@ -44,6 +72,7 @@ export function ReportDetailPage() {
   const [liveSections, setLiveSections] = useState<Report["sections"]>([])
   const [agentMessage, setAgentMessage] = useState<string>("")
   const [agentProgress, setAgentProgress] = useState<number>(0)
+  const [clusterProgress, setClusterProgress] = useState<ClusterProgress>(null)
   const [isReconnecting, setIsReconnecting] = useState(false)
   const sseConnectionRef = useRef<EventSource | null>(null)
   const reconnectTimeoutRef = useRef<NodeJS.Timeout | null>(null)
@@ -55,8 +84,8 @@ export function ReportDetailPage() {
     queryFn: () => reportsApi.get(Number(reportId)),
     enabled: !!reportId,
     // 正在生成的报告自动刷新
-    refetchInterval: (data) => {
-      return data?.status === "generating" ? AUTO_REFRESH_INTERVAL : false
+    refetchInterval: (query) => {
+      return query.state.data?.status === "generating" ? AUTO_REFRESH_INTERVAL : false
     },
   })
 
@@ -108,6 +137,9 @@ export function ReportDetailPage() {
         if (data.data?.sections) {
           setLiveSections(data.data.sections)
         }
+        if (data.data?.cluster_progress) {
+          setClusterProgress(data.data.cluster_progress as NonNullable<ClusterProgress>)
+        }
         if (data.message) {
           setAgentMessage(data.message)
         }
@@ -143,6 +175,7 @@ export function ReportDetailPage() {
     eventSource.addEventListener("complete", (e: MessageEvent) => {
       console.log("报告生成完成")
       setCurrentStreamingSection(null)
+      setClusterProgress(null)
       setIsReconnecting(false)
       refetch()
       cleanup()
@@ -272,7 +305,7 @@ export function ReportDetailPage() {
                   <div className="flex items-center gap-2 text-sm text-muted-foreground mt-1">
                     <span>{formatDateTime(report.created_at)}</span>
                     <span>·</span>
-                    <span>{report.total_articles} 篇文章</span>
+                    <span>{report.total_articles > 0 ? `${report.total_articles} 篇文章` : "文章统计中"}</span>
                   </div>
                 )}
               </div>
@@ -313,17 +346,12 @@ export function ReportDetailPage() {
                   <div className="flex items-center gap-2">
                     <Hash className="h-4 w-4 text-muted-foreground" />
                     <span className="text-muted-foreground">文章数：</span>
-                    <span>{report.total_articles} 篇</span>
-                    {report.clustered_articles > 0 && (
-                      <span className="text-muted-foreground">
-                        → {report.clustered_articles} 篇
-                      </span>
-                    )}
+                    <span>{formatReportArticleStats(report)}</span>
                   </div>
                   <div className="flex items-center gap-2">
                     <Layers className="h-4 w-4 text-muted-foreground" />
                     <span className="text-muted-foreground">事件数：</span>
-                    <span>{report.event_count} 个</span>
+                    <span>{formatReportEventStats(report)}</span>
                   </div>
                   {getStatusBadge(report.status)}
                   {report.language && (
@@ -364,6 +392,43 @@ export function ReportDetailPage() {
                     </div>
                   </CardContent>
                 </Card>
+
+                {(report.agent_stage === "clustering_articles" || clusterProgress) && (
+                  <Card>
+                    <CardHeader>
+                      <CardTitle className="text-sm flex items-center gap-2">
+                        <Layers className="h-4 w-4" />
+                        聚类进度
+                      </CardTitle>
+                    </CardHeader>
+                    <CardContent>
+                      {clusterProgress ? (
+                        <div className="grid grid-cols-2 md:grid-cols-4 gap-4 text-sm">
+                          <div>
+                            <div className="text-muted-foreground">当前进度</div>
+                            <div className="font-medium">
+                              {clusterProgress.current} / {clusterProgress.total}
+                            </div>
+                          </div>
+                          <div>
+                            <div className="text-muted-foreground">已比对次数</div>
+                            <div className="font-medium">{clusterProgress.comparisons.toLocaleString("zh-CN")}</div>
+                          </div>
+                          <div>
+                            <div className="text-muted-foreground">已形成簇</div>
+                            <div className="font-medium">{clusterProgress.cluster_count}</div>
+                          </div>
+                          <div>
+                            <div className="text-muted-foreground">当前阶段</div>
+                            <div className="font-medium">{agentMessage || report.agent_message || "正在聚类"}</div>
+                          </div>
+                        </div>
+                      ) : (
+                        <div className="text-sm text-muted-foreground">正在准备聚类候选文章...</div>
+                      )}
+                    </CardContent>
+                  </Card>
+                )}
 
                 {/* AI 实时生成内容 */}
                 {currentStreamingSection && (
@@ -501,12 +566,14 @@ export function ReportDetailPage() {
                               <blockquote className="border-l-4 border-primary pl-4 italic my-4 text-muted-foreground" {...props} />
                             ),
                             // 自定义代码块样式
-                            code: ({ node, inline, ...props }) =>
-                              inline ? (
+                            code: ({ node, className, children, ...props }) => {
+                              const inline = !className
+                              return inline ? (
                                 <code className="bg-muted px-1.5 py-0.5 rounded text-sm font-mono" {...props} />
                               ) : (
                                 <code className="block bg-muted p-4 rounded-lg text-sm font-mono overflow-x-auto my-4" {...props} />
-                              ),
+                              )
+                            },
                           }}
                         >
                           {report.content}

@@ -60,6 +60,22 @@
 }
 
 @layer components {
+  @keyframes fadeInChar {
+    from {
+      opacity: 0;
+      transform: translateY(0.18rem);
+    }
+    to {
+      opacity: 1;
+      transform: translateY(0);
+    }
+  }
+
+  ._fadeIn {
+    display: inline-block;
+    animation: fadeInChar 700ms ease forwards;
+  }
+
   /* 自定义滚动条 */
   .custom-scrollbar::-webkit-scrollbar {
     width: 6px;

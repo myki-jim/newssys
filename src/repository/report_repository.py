@@ -41,6 +41,7 @@ class ReportRepository(BaseRepository):
             "template_id": report.template_id,
             "custom_prompt": report.custom_prompt,
             "language": report.language,
+            "max_events": report.max_events,
             "status": ReportStatus.GENERATING.value,
             "agent_stage": ReportAgentStage.INITIALIZING.value,
             "total_articles": 0,

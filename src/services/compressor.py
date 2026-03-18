@@ -6,6 +6,10 @@
 import re
 from typing import Any
 
+import jieba
+
+from src.services.simhash import normalize_text
+
 
 class ContentCompressor:
     """
@@ -88,55 +92,53 @@ class ContentCompressor:
     def _compress_to_summary(self, content: str) -> str | None:
         """
         压缩为摘要
-        保留第一段和关键句子
+        使用句子抽取保留关键信息
         """
         if not content:
             return None
 
-        # 移除 Markdown 格式
         content = self._strip_markdown(content)
-
-        # 分段
-        paragraphs = self._split_paragraphs(content)
-
-        if not paragraphs:
+        sentences = self._split_sentences(content)
+        if not sentences:
             return None
 
-        # 保留第一段
-        summary = paragraphs[0]
-
-        # 如果第一段太长，截断
-        if len(summary) > self.max_summary_length:
-            summary = summary[:self.max_summary_length - 3] + '...'
-
-        return summary.strip()
+        ranked = self._extract_key_sentences(sentences, max_chars=self.max_summary_length)
+        if not ranked:
+            return None
+        return " ".join(ranked).strip()
 
     def _compress_to_full(self, content: str) -> str | None:
         """
         压缩为完整内容（但限制长度）
-        保留前几段
+        保留关键句和前部上下文
         """
         if not content:
             return None
 
-        # 移除 Markdown 格式
         content = self._strip_markdown(content)
-
-        # 分段
         paragraphs = self._split_paragraphs(content)
-
         if not paragraphs:
             return None
 
-        # 保留前几段
         result_parts = []
         current_length = 0
 
-        for para in paragraphs:
+        # 先保留前两段，保证背景上下文。
+        for para in paragraphs[:2]:
             if current_length + len(para) > self.max_full_length:
                 break
             result_parts.append(para)
             current_length += len(para)
+
+        remaining = "\n\n".join(paragraphs[2:])
+        if remaining and current_length < self.max_full_length:
+            sentences = self._split_sentences(remaining)
+            selected = self._extract_key_sentences(
+                sentences,
+                max_chars=max(self.max_full_length - current_length - 2, 0),
+            )
+            if selected:
+                result_parts.append(" ".join(selected))
 
         result = '\n\n'.join(result_parts)
 
@@ -170,7 +172,7 @@ class ContentCompressor:
         text = re.sub(r'^[\s]*[-*+]\s+', '', text, flags=re.MULTILINE)
         text = re.sub(r'^[\s]*\d+\.\s+', '', text, flags=re.MULTILINE)
 
-        return text
+        return normalize_text(text)
 
     @staticmethod
     def _split_paragraphs(text: str) -> list[str]:
@@ -183,6 +185,91 @@ class ContentCompressor:
 
         # 过滤空段落
         return [p.strip() for p in paragraphs if p.strip()]
+
+    @staticmethod
+    def _split_sentences(text: str) -> list[str]:
+        """按中英文句号、问号、叹号切句。"""
+        if not text:
+            return []
+
+        normalized = normalize_text(text)
+        parts = re.split(r'(?<=[。！？!?\.])\s+', normalized)
+        sentences = []
+        for part in parts:
+            stripped = part.strip()
+            if len(stripped) >= 8:
+                sentences.append(stripped)
+        return sentences
+
+    def _extract_key_sentences(
+        self,
+        sentences: list[str],
+        max_chars: int,
+    ) -> list[str]:
+        """简单抽取式摘要：按位置、数字、关键词密度打分。"""
+        if not sentences or max_chars <= 0:
+            return []
+
+        token_freq: dict[str, int] = {}
+        for sentence in sentences[:12]:
+            for token in jieba.lcut(sentence):
+                token = token.strip()
+                if len(token) >= 2:
+                    token_freq[token] = token_freq.get(token, 0) + 1
+
+        ranked: list[tuple[int, float, str]] = []
+        sentence_count = len(sentences)
+
+        for index, sentence in enumerate(sentences):
+            score = 0.0
+
+            # 开头和结尾句更重要
+            if index == 0:
+                score += 3.0
+            elif index == 1:
+                score += 1.5
+            if index == sentence_count - 1:
+                score += 1.0
+
+            # 含数字、时间、金额通常包含事实信息
+            if re.search(r'\d', sentence):
+                score += 2.0
+            if re.search(r'(今日|昨日|目前|已经|将于|当地时间|同比|环比|亿元|万美元|%)', sentence):
+                score += 1.5
+
+            # 关键词密度
+            keywords = [token for token in jieba.lcut(sentence) if len(token.strip()) >= 2]
+            score += sum(min(token_freq.get(token, 0), 3) for token in keywords) * 0.25
+
+            # 过短或过长句子降权
+            if len(sentence) < 15:
+                score -= 1.0
+            elif len(sentence) > 180:
+                score -= 0.5
+
+            ranked.append((index, score, sentence))
+
+        ranked.sort(key=lambda item: item[1], reverse=True)
+
+        selected: list[tuple[int, str]] = []
+        used_chars = 0
+
+        for index, _score, sentence in ranked:
+            if used_chars + len(sentence) > max_chars and selected:
+                continue
+            selected.append((index, sentence))
+            used_chars += len(sentence) + 1
+            if used_chars >= max_chars:
+                break
+            if len(selected) >= 4:
+                break
+
+        selected.sort(key=lambda item: item[0])
+        result = [sentence for _, sentence in selected]
+
+        if not result and sentences:
+            return [sentences[0][:max_chars]]
+        return result
 
     def compress_batch(
         self,

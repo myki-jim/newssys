@@ -234,6 +234,7 @@ export type ReportStatus = 'draft' | 'generating' | 'completed' | 'failed'
 export type ReportAgentStage =
   | 'initializing'
   | 'filtering_articles'
+  | 'generating_keywords'
   | 'clustering_articles'
   | 'extracting_events'
   | 'generating_sections'
@@ -342,6 +343,12 @@ export interface ReportSSEStateEvent {
     total_articles?: number
     clustered_articles?: number
     event_count?: number
+    cluster_progress?: {
+      current: number
+      total: number
+      comparisons: number
+      cluster_count: number
+    }
     keywords?: string[]  // AI 生成的关键字列表
     events?: Array<{
       title: string
@@ -362,6 +369,7 @@ export interface ReportSSESectionStreamEvent {
 
 export interface ReportSSECompleteEvent {
   event: 'complete'
+  report_id?: number
   content: string
   sections: ReportSection[]
   events?: Array<{
@@ -379,6 +387,7 @@ export interface ReportSSECompleteEvent {
 
 export interface ReportSSEErrorEvent {
   event: 'error'
+  report_id?: number
   error: string
 }
 
@@ -563,7 +572,7 @@ export interface ParserDebugResult {
 // ============================================================================
 
 export type TaskStatusType = 'pending' | 'running' | 'completed' | 'failed' | 'cancelled'
-export type TaskTypeType = 'crawl_pending' | 'retry_failed' | 'crawl_source' | 'search_import' | 'sitemap_sync' | 'auto_search' | 'cleanup_low_quality'
+export type TaskTypeType = 'crawl_pending' | 'retry_failed' | 'crawl_source' | 'search_import' | 'sitemap_sync' | 'auto_search' | 'cleanup_low_quality' | 'generate_report' | 'ai_chat'
 export type TaskEventType = 'created' | 'started' | 'progress' | 'completed' | 'failed' | 'cancelled' | 'info'
 
 export interface Task {

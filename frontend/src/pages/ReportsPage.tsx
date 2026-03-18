@@ -193,6 +193,28 @@ export function ReportsPage() {
     return `${formatDate(startDate)} 至 ${formatDate(endDate)}`
   }
 
+  const formatArticleStats = (report: Report) => {
+    if (report.status === "generating") {
+      const total = report.total_articles > 0 ? `${report.total_articles} 篇` : "统计中"
+      const deduplicated = report.clustered_articles > 0 ? `${report.clustered_articles} 篇` : "处理中"
+      return `${total} → ${deduplicated}`
+    }
+
+    if (report.clustered_articles > 0 && report.clustered_articles < report.total_articles) {
+      return `${report.total_articles} 篇 → ${report.clustered_articles} 篇`
+    }
+
+    return `${report.total_articles} 篇`
+  }
+
+  const formatEventStats = (report: Report) => {
+    if (report.status === "generating" && report.event_count <= 0) {
+      return "处理中"
+    }
+
+    return `${report.event_count} 个`
+  }
+
   const handleViewReport = (reportId: number) => {
     navigate(`/reports/${reportId}`)
   }
@@ -270,17 +292,10 @@ export function ReportsPage() {
                         </span>
                       </TableCell>
                       <TableCell>
-                        <div className="text-sm">
-                          {report.total_articles} 篇
-                          {report.clustered_articles > 0 && report.clustered_articles < report.total_articles && (
-                            <span className="text-muted-foreground">
-                              {" → "}{report.clustered_articles} 篇
-                            </span>
-                          )}
-                        </div>
+                        <div className="text-sm">{formatArticleStats(report)}</div>
                       </TableCell>
                       <TableCell>
-                        <span className="text-sm">{report.event_count} 个</span>
+                        <span className="text-sm">{formatEventStats(report)}</span>
                       </TableCell>
                       <TableCell>
                         <div className="space-y-1">

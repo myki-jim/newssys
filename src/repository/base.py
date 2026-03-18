@@ -3,10 +3,12 @@ Repository 基类模块
 定义泛型 Repository 基础接口
 """
 
+import asyncio
 from collections.abc import AsyncGenerator
 from typing import Any, TypeVar
 
 from sqlalchemy import text
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 # 兼容 SQLAlchemy 1.4 和 2.0
@@ -24,6 +26,8 @@ T = TypeVar("T")
 
 # 类型别名：Row 的泛型版本
 RowAny = Row[Any]
+SQLITE_LOCK_RETRY_ATTEMPTS = 5
+SQLITE_LOCK_RETRY_BASE_SECONDS = 0.15
 
 
 class BaseRepository:
@@ -41,6 +45,7 @@ class BaseRepository:
         """
         self._session = session
         self._owns_session = session is None
+        self._session_generator: AsyncGenerator[AsyncSession, None] | None = None
 
     @property
     def session(self) -> AsyncSession:
@@ -52,13 +57,16 @@ class BaseRepository:
     async def __aenter__(self) -> "BaseRepository":
         """异步上下文管理器入口"""
         if self._owns_session:
-            self._session = await get_db_session().__anext__()
+            self._session_generator = get_db_session()
+            self._session = await self._session_generator.__anext__()
         return self
 
     async def __aexit__(self, *args: Any) -> None:
         """异步上下文管理器退出"""
-        if self._owns_session and self._session is not None:
-            await self._session.close()
+        if self._owns_session and self._session_generator is not None:
+            await self._session_generator.aclose()
+            self._session_generator = None
+            self._session = None
 
     async def execute(
         self, sql: str, params: dict[str, Any] | None = None
@@ -73,8 +81,16 @@ class BaseRepository:
         Returns:
             查询结果
         """
-        result = await self.session.execute(text(sql), params or {})
-        return result
+        for attempt in range(SQLITE_LOCK_RETRY_ATTEMPTS):
+            try:
+                result = await self.session.execute(text(sql), params or {})
+                return result
+            except OperationalError as exc:
+                message = str(exc).lower()
+                if "database is locked" not in message or attempt == SQLITE_LOCK_RETRY_ATTEMPTS - 1:
+                    raise
+                await asyncio.sleep(SQLITE_LOCK_RETRY_BASE_SECONDS * (attempt + 1))
+        raise RuntimeError("unreachable")
 
     async def fetch_all(
         self, sql: str, params: dict[str, Any] | None = None

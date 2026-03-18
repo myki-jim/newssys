@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import List
 
 from dotenv import load_dotenv
-from pydantic import Field, field_validator
+from pydantic import AliasChoices, Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 # 加载 .env 文件
@@ -47,10 +47,18 @@ class DatabaseSettings(BaseSettings):
     name: str = "newssys"  # MySQL: 数据库名, SQLite: 文件名
     pool_size: int = 10
     max_overflow: int = 20
+    sqlite_timeout: float = 30.0
+    sqlite_busy_timeout_ms: int = 30000
+    database_url: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices("DATABASE_URL", "database_url"),
+    )
 
     @property
     def url(self) -> str:
         """生成数据库连接 URL，支持 MySQL 和 SQLite"""
+        if self.database_url:
+            return self.database_url
         if self.type == "sqlite":
             # SQLite 使用文件路径
             db_path = Path(__file__).parent.parent.parent / f"{self.name}.db"
@@ -71,9 +79,18 @@ class AISettings(BaseSettings):
         extra="ignore",
     )
 
-    base_url: str = "https://api.siliconflow.cn/v1"
-    api_key: str = ""
-    model: str = "deepseek-ai/DeepSeek-V3"
+    base_url: str = Field(
+        default="https://api.siliconflow.cn/v1",
+        validation_alias=AliasChoices("AI_BASE_URL", "OPENAI_BASE_URL", "base_url"),
+    )
+    api_key: str = Field(
+        default="",
+        validation_alias=AliasChoices("AI_API_KEY", "OPENAI_API_KEY", "api_key"),
+    )
+    model: str = Field(
+        default="deepseek-ai/DeepSeek-V3",
+        validation_alias=AliasChoices("AI_MODEL", "OPENAI_MODEL", "model"),
+    )
     max_tokens: int = 4096
     temperature: float = 0.3
     timeout: int = 60
@@ -130,7 +147,10 @@ class ReportSettings(BaseSettings):
 class LogSettings(BaseSettings):
     """日志配置"""
 
-    level: str = "INFO"
+    level: str = Field(
+        default="INFO",
+        validation_alias=AliasChoices("LOG_LEVEL", "LOG_LEVEL".lower(), "level"),
+    )
     format: str = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
     file_path: str = "logs/newssys.log"
     rotation: str = "midnight"
@@ -138,6 +158,84 @@ class LogSettings(BaseSettings):
 
     class Config:
         env_prefix = "LOG_"
+
+
+class RuntimeSettings(BaseSettings):
+    """运行时配置"""
+
+    model_config = SettingsConfigDict(
+        env_file=".env",
+        env_file_encoding="utf-8",
+        case_sensitive=False,
+        extra="ignore",
+    )
+
+    enable_scheduler: bool = Field(
+        default=False,
+        validation_alias=AliasChoices("ENABLE_SCHEDULER", "enable_scheduler"),
+    )
+    scheduler_heartbeat_file: str = Field(
+        default="/tmp/newssys-scheduler-heartbeat",
+        validation_alias=AliasChoices("SCHEDULER_HEARTBEAT_FILE", "scheduler_heartbeat_file"),
+    )
+    scheduler_heartbeat_interval_seconds: int = Field(
+        default=15,
+        validation_alias=AliasChoices(
+            "SCHEDULER_HEARTBEAT_INTERVAL_SECONDS",
+            "scheduler_heartbeat_interval_seconds",
+        ),
+    )
+    scheduler_heartbeat_stale_seconds: int = Field(
+        default=90,
+        validation_alias=AliasChoices(
+            "SCHEDULER_HEARTBEAT_STALE_SECONDS",
+            "scheduler_heartbeat_stale_seconds",
+        ),
+    )
+    report_heartbeat_file: str = Field(
+        default="/tmp/newssys-report-heartbeat",
+        validation_alias=AliasChoices("REPORT_HEARTBEAT_FILE", "report_heartbeat_file"),
+    )
+    report_heartbeat_stale_seconds: int = Field(
+        default=90,
+        validation_alias=AliasChoices(
+            "REPORT_HEARTBEAT_STALE_SECONDS",
+            "report_heartbeat_stale_seconds",
+        ),
+    )
+    crawl_heartbeat_file: str = Field(
+        default="/tmp/newssys-crawl-heartbeat",
+        validation_alias=AliasChoices("CRAWL_HEARTBEAT_FILE", "crawl_heartbeat_file"),
+    )
+    crawl_heartbeat_stale_seconds: int = Field(
+        default=90,
+        validation_alias=AliasChoices(
+            "CRAWL_HEARTBEAT_STALE_SECONDS",
+            "crawl_heartbeat_stale_seconds",
+        ),
+    )
+    search_heartbeat_file: str = Field(
+        default="/tmp/newssys-search-heartbeat",
+        validation_alias=AliasChoices("SEARCH_HEARTBEAT_FILE", "search_heartbeat_file"),
+    )
+    search_heartbeat_stale_seconds: int = Field(
+        default=90,
+        validation_alias=AliasChoices(
+            "SEARCH_HEARTBEAT_STALE_SECONDS",
+            "search_heartbeat_stale_seconds",
+        ),
+    )
+    ai_heartbeat_file: str = Field(
+        default="/tmp/newssys-ai-heartbeat",
+        validation_alias=AliasChoices("AI_HEARTBEAT_FILE", "ai_heartbeat_file"),
+    )
+    ai_heartbeat_stale_seconds: int = Field(
+        default=90,
+        validation_alias=AliasChoices(
+            "AI_HEARTBEAT_STALE_SECONDS",
+            "ai_heartbeat_stale_seconds",
+        ),
+    )
 
 
 class Settings(BaseSettings):
@@ -157,13 +255,20 @@ class Settings(BaseSettings):
     search_engine: SearchEngineSettings = Field(default_factory=SearchEngineSettings)
     report: ReportSettings = Field(default_factory=ReportSettings)
     log: LogSettings = Field(default_factory=LogSettings)
+    runtime: RuntimeSettings = Field(default_factory=RuntimeSettings)
 
     cors_origins: List[str] = Field(
-        default=["http://localhost:5173", "http://localhost:3000"]
+        default=["http://localhost:5173", "http://localhost:3000"],
+        validation_alias=AliasChoices("CORS_ORIGINS", "cors_origins"),
     )
 
     debug: bool = False
     DEBUG: bool = False  # 别名，兼容旧代码
+
+    @property
+    def CORS_ORIGINS(self) -> List[str]:
+        """兼容旧代码中的大写属性访问。"""
+        return self.cors_origins
 
     @field_validator("cors_origins", mode="before")
     @classmethod

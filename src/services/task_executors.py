@@ -3,9 +3,11 @@
 具体的任务执行逻辑
 """
 
+import json
 import logging
+import random
 from collections.abc import Callable
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -13,11 +15,18 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from src.core.models import (
     FetchStatus,
     PendingArticleStatus,
+    Report,
+    ReportTemplate,
+    ReportStatus,
     TaskEventType,
 )
 from src.repository.article_repository import ArticleRepository
+from src.repository.conversation_repository import ConversationRepository
 from src.repository.pending_article_repository import PendingArticleRepository
+from src.repository.report_repository import ReportRepository, ReportTemplateRepository
 from src.repository.source_repository import SourceRepository
+from src.services.ai_agent import AIAgentService
+from src.services.report_agent import ReportGenerationAgent
 from src.services.task_manager import TaskExecutor
 from src.services.universal_scraper import UniversalScraper
 
@@ -25,10 +34,199 @@ from src.services.universal_scraper import UniversalScraper
 logger = logging.getLogger(__name__)
 
 
+class ReportGenerationExecutor(TaskExecutor):
+    """报告生成执行器。"""
+
+    async def execute(
+        self,
+        task_id: int,
+        params: dict[str, Any],
+        on_progress: Callable[[int, int, str | None], None] | None = None,
+        on_event: Callable[[TaskEventType, dict[str, Any] | None], None] | None = None,
+        check_cancelled: Callable[[], bool] | None = None,
+    ) -> dict[str, Any]:
+        from src.core.database import get_async_session
+
+        report_id = params["report_id"]
+
+        async with get_async_session() as db:
+            report_repo = ReportRepository(db)
+            template_repo = ReportTemplateRepository(db)
+            def emit(event_type: str, payload: dict[str, Any]) -> None:
+                if on_event:
+                    on_event(TaskEventType.INFO, {"stream_event": event_type, **payload})
+
+            try:
+                report_data = await report_repo.fetch_by_id(report_id)
+                if not report_data:
+                    raise ValueError(f"报告不存在: {report_id}")
+
+                template = None
+                template_id = params.get("template_id") or report_data.get("template_id")
+                if template_id:
+                    template = await template_repo.fetch_by_id(template_id)
+                if template is None:
+                    template = await template_repo.fetch_default()
+
+                if template is None:
+                    raise ValueError("未找到可用报告模板")
+
+                report = Report(**report_data)
+                agent = ReportGenerationAgent(db)
+                current_stream_content = {"title": "", "content": ""}
+                full_result: dict[str, Any] = {}
+                last_state_token: str | None = None
+
+                def on_section_stream(section_title: str, chunk: str) -> None:
+                    nonlocal current_stream_content
+                    if current_stream_content["title"] != section_title:
+                        current_stream_content = {"title": section_title, "content": chunk}
+                    else:
+                        current_stream_content["content"] += chunk
+
+                    emit(
+                        "section_stream",
+                        {
+                            "report_id": report_id,
+                            "section_title": section_title,
+                            "chunk": chunk,
+                            "accumulated_content": current_stream_content["content"],
+                        },
+                    )
+
+                async def process_state(state) -> None:
+                    nonlocal full_result, last_state_token
+                    full_result = state.data or {}
+                    token = json.dumps(
+                        {
+                            "stage": state.stage.value if hasattr(state.stage, "value") else state.stage,
+                            "progress": state.progress,
+                            "message": state.message,
+                            "data": full_result,
+                        },
+                        ensure_ascii=False,
+                        sort_keys=True,
+                        default=str,
+                    )
+                    if token == last_state_token:
+                        return
+                    last_state_token = token
+
+                    update_data = {
+                        "agent_stage": state.stage,
+                        "agent_progress": state.progress,
+                        "agent_message": state.message,
+                        "total_articles": full_result.get("total_articles", report.total_articles),
+                        "clustered_articles": full_result.get("clustered_articles", report.clustered_articles),
+                        "event_count": full_result.get("event_count", report.event_count),
+                    }
+
+                    if "sections" in full_result:
+                        update_data["sections"] = full_result["sections"]
+
+                    await report_repo.update(report_id, update_data)
+
+                    if on_progress:
+                        on_progress(state.progress, state.total, state.message, full_result)
+
+                    emit(
+                        "state",
+                        {
+                            "report_id": report_id,
+                            "stage": state.stage.value if hasattr(state.stage, "value") else state.stage,
+                            "progress": state.progress,
+                            "total": state.total,
+                            "message": state.message,
+                            "data": full_result,
+                        },
+                    )
+
+                async for state in agent.generate_report(
+                    report=report,
+                    template=ReportTemplate(**template),
+                    on_state_update=process_state,
+                    on_section_stream=on_section_stream,
+                ):
+                    if check_cancelled and check_cancelled():
+                        raise RuntimeError("报告生成已取消")
+                    await process_state(state)
+
+                statistics = full_result.get("statistics", {})
+                await report_repo.update(
+                    report_id,
+                    {
+                        "status": ReportStatus.COMPLETED,
+                        "content": full_result.get("content", ""),
+                        "sections": full_result.get("sections", []),
+                        "total_articles": statistics.get("total_articles", 0),
+                        "clustered_articles": statistics.get("clustered_articles", 0),
+                        "event_count": statistics.get("event_count", 0),
+                        "agent_progress": 100,
+                        "agent_message": "报告生成完成",
+                    },
+                )
+
+                result = {
+                    "report_id": report_id,
+                    "content": full_result.get("content", ""),
+                    "sections": full_result.get("sections", []),
+                    "statistics": statistics,
+                    "events": full_result.get("events", []),
+                }
+                emit("complete", result)
+                return result
+            except Exception as exc:
+                await report_repo.update(
+                    report_id,
+                    {
+                        "status": ReportStatus.FAILED,
+                        "error_message": str(exc),
+                        "agent_message": f"报告生成失败: {exc}",
+                    },
+                )
+                emit("error", {"report_id": report_id, "error": str(exc)})
+                raise
+
+
 class CrawlPendingExecutor(TaskExecutor):
-    """
-    批量爬取待爬文章执行器
-    """
+    """批量爬取待爬文章执行器。"""
+
+    @staticmethod
+    def _normalize_datetime(value: Any) -> datetime | None:
+        if value is None:
+            return None
+        if isinstance(value, str):
+            try:
+                value = datetime.fromisoformat(value.replace("Z", "+00:00"))
+            except ValueError:
+                return None
+        if not isinstance(value, datetime):
+            return None
+        if value.tzinfo is None:
+            return value.replace(tzinfo=timezone.utc)
+        return value.astimezone(timezone.utc)
+
+    def _article_priority(self, article: dict[str, Any], picks_for_source: int) -> float:
+        """按发布时间优先，同时加入站点公平性和轻微随机扰动。"""
+        publish_time = self._normalize_datetime(article.get("publish_time"))
+        if publish_time is None:
+            recency_score = 0.25
+        else:
+            age_hours = max((datetime.now(timezone.utc) - publish_time).total_seconds() / 3600, 0)
+            if age_hours <= 6:
+                recency_score = 1.4
+            elif age_hours <= 24:
+                recency_score = 1.15
+            elif age_hours <= 72:
+                recency_score = 0.9
+            elif age_hours <= 168:
+                recency_score = 0.6
+            else:
+                recency_score = 0.3
+
+        fairness_penalty = 1 / (1 + picks_for_source * 0.8)
+        jitter = random.uniform(0.9, 1.1)
+        return recency_score * fairness_penalty * jitter
 
     async def execute(
         self,
@@ -51,31 +249,27 @@ class CrawlPendingExecutor(TaskExecutor):
         Returns:
             任务结果
         """
-        print(f"[CrawlPendingExecutor] 开始执行任务 {task_id}")
         limit_per_source = params.get("limit_per_source", 10)
-        print(f"[CrawlPendingExecutor] limit_per_source={limit_per_source}")
+        logger.info("开始执行批量爬取任务 %s, limit_per_source=%s", task_id, limit_per_source)
 
         # 创建新的数据库会话
         from src.core.database import get_async_session
 
-        print(f"[CrawlPendingExecutor] 准备创建数据库会话...")
         async with get_async_session() as db:
-            print(f"[CrawlPendingExecutor] 数据库会话已创建")
             pending_repo = PendingArticleRepository(db)
             source_repo = SourceRepository(db)
             article_repo = ArticleRepository(db)
 
-            print(f"[CrawlPendingExecutor] 获取启用的源列表...")
             # 获取所有启用的源
             sources = await source_repo.fetch_many(
                 filters={"enabled": True},
                 limit=100,
             )
 
-            print(f"[CrawlPendingExecutor] 获取到 {len(sources) if sources else 0} 个启用的源")
+            logger.info("获取到 %s 个启用的源", len(sources) if sources else 0)
 
             if not sources:
-                print(f"[CrawlPendingExecutor] 没有启用的源！")
+                logger.warning("没有启用的源")
                 return {
                     "success": 0,
                     "failed": 0,
@@ -83,9 +277,9 @@ class CrawlPendingExecutor(TaskExecutor):
                     "sources": [],
                 }
 
-            # 计算总数
+            random.shuffle(sources)
             total_sources = len(sources)
-            print(f"[CrawlPendingExecutor] 总共 {total_sources} 个源")
+            logger.info("总共 %s 个源（已打乱顺序）", total_sources)
             result = {
                 "success": 0,
                 "failed": 0,
@@ -94,25 +288,15 @@ class CrawlPendingExecutor(TaskExecutor):
             }
 
             scraper = UniversalScraper()
+            source_queues: list[dict[str, Any]] = []
+            source_results: dict[int, dict[str, Any]] = {}
 
             for source_index, source in enumerate(sources):
-                # 检查取消
                 if check_cancelled and check_cancelled():
                     break
 
                 source_name = source["site_name"]
                 source_id = source["id"]
-                if on_progress:
-                    on_progress(
-                        source_index,
-                        total_sources,
-                        f"正在处理源: {source_name}",
-                    )
-
-                # 获取该源的待爬文章 - 使用 fetch_all 和原始 SQL
-                # 注意：SQLite 的 LIMIT 不支持参数绑定，需要直接嵌入值
-                print(f"[CrawlPendingExecutor] 查询源 {source_name} (ID={source_id}) 的待爬文章")
-
                 pending_articles = await pending_repo.fetch_all(
                     f"""SELECT * FROM pending_articles
                     WHERE source_id = :source_id AND status = :status
@@ -124,11 +308,18 @@ class CrawlPendingExecutor(TaskExecutor):
                     },
                 )
 
-                print(f"[CrawlPendingExecutor] 源 {source_name} 查询到 {len(pending_articles) if pending_articles else 0} 条待爬文章")
+                logger.info("源 %s 查询到 %s 条待爬文章", source_name, len(pending_articles) if pending_articles else 0)
+
+                source_result = {
+                    "source_id": source_id,
+                    "site_name": source_name,
+                    "success": 0,
+                    "failed": 0,
+                }
+                source_results[source_id] = source_result
 
                 if not pending_articles:
                     result["skipped"] += 1
-                    # 更新进度（包含中间结果）
                     if on_progress:
                         on_progress(
                             source_index + 1,
@@ -138,67 +329,79 @@ class CrawlPendingExecutor(TaskExecutor):
                         )
                     continue
 
-                source_result = {
-                    "source_id": source_id,
-                    "site_name": source_name,
-                    "success": 0,
-                    "failed": 0,
-                }
+                source_queues.append(
+                    {
+                        "source": source,
+                        "articles": list(pending_articles),
+                        "picked": 0,
+                    }
+                )
 
-                # 爬取每篇文章
-                for article in pending_articles:
-                    # 检查取消
-                    if check_cancelled and check_cancelled():
-                        break
+            crawl_plan: list[tuple[dict[str, Any], dict[str, Any]]] = []
+            while True:
+                available = [entry for entry in source_queues if entry["articles"]]
+                if not available:
+                    break
 
-                    try:
-                        # 标记为爬取中
-                        await pending_repo.update_status(
-                            article["id"],
-                            PendingArticleStatus.CRAWLING,
-                        )
+                available.sort(
+                    key=lambda entry: self._article_priority(entry["articles"][0], entry["picked"]),
+                    reverse=True,
+                )
+                chosen = available[0]
+                crawl_plan.append((chosen["source"], chosen["articles"].pop(0)))
+                chosen["picked"] += 1
 
-                        # 使用通用爬虫爬取
-                        scraped = await scraper.scrape(
-                            url=article["url"],
-                            source_id=source_id,
-                            parser_config=source["parser_config"],
-                        )
+            total_articles = len(crawl_plan)
+            logger.info("本轮交错调度后共有 %s 篇待爬文章", total_articles)
 
-                        # 保存文章到 articles 表
-                        await article_repo.create_from_scraped(scraped, source_id)
+            for index, (source, article) in enumerate(crawl_plan):
+                if check_cancelled and check_cancelled():
+                    break
 
-                        # 标记待爬文章为已完成
-                        await pending_repo.update_status(
-                            article["id"],
-                            PendingArticleStatus.COMPLETED,
-                        )
+                source_id = source["id"]
+                source_name = source["site_name"]
+                source_result = source_results[source_id]
+                display_title = article.get("title") or article.get("url", "无标题")
+                if len(display_title) > 50:
+                    display_title = display_title[:47] + "..."
 
-                        source_result["success"] += 1
-                        result["success"] += 1
-
-                    except Exception as e:
-                        logger.error(f"Failed to crawl article {article['url']}: {e}")
-
-                        # 标记为失败
-                        await pending_repo.update_status(
-                            article["id"],
-                            PendingArticleStatus.FAILED,
-                        )
-
-                        source_result["failed"] += 1
-                        result["failed"] += 1
-
-                result["sources"].append(source_result)
-
-                # 处理完源后更新进度（包含中间结果）
                 if on_progress:
                     on_progress(
-                        source_index + 1,
-                        total_sources,
+                        index,
+                        max(total_articles, 1),
+                        f"正在爬取: {source_name} / {display_title}",
+                        {"success": result["success"], "failed": result["failed"], "skipped": result["skipped"]},
+                    )
+
+                try:
+                    await pending_repo.update_status(article["id"], PendingArticleStatus.CRAWLING)
+
+                    scraped = await scraper.scrape(
+                        url=article["url"],
+                        source_id=source_id,
+                        parser_config=source["parser_config"],
+                    )
+
+                    await article_repo.create_from_scraped(scraped, source_id)
+                    await pending_repo.update_status(article["id"], PendingArticleStatus.COMPLETED)
+
+                    source_result["success"] += 1
+                    result["success"] += 1
+                except Exception as e:
+                    logger.error(f"Failed to crawl article {article['url']}: {e}")
+                    await pending_repo.update_status(article["id"], PendingArticleStatus.FAILED)
+                    source_result["failed"] += 1
+                    result["failed"] += 1
+
+                if on_progress:
+                    on_progress(
+                        index + 1,
+                        max(total_articles, 1),
                         f"已完成: {source_name}",
                         {"success": result["success"], "failed": result["failed"], "skipped": result["skipped"]},
                     )
+
+            result["sources"] = list(source_results.values())
 
             return result
 
@@ -240,7 +443,7 @@ class RetryFailedExecutor(TaskExecutor):
 
             # 获取失败的待爬文章 - 使用 fetch_all 和原始 SQL
             # 注意：SQLite 的 LIMIT 不支持参数绑定，需要直接嵌入值
-            print(f"[RetryFailedExecutor] 查询失败文章，status={PendingArticleStatus.FAILED.value}")
+            logger.info("查询失败文章，status=%s", PendingArticleStatus.FAILED.value)
             failed_articles = await pending_repo.fetch_all(
                 f"""SELECT * FROM pending_articles
                 WHERE status = :status
@@ -250,7 +453,7 @@ class RetryFailedExecutor(TaskExecutor):
                     "status": PendingArticleStatus.FAILED.value,
                 },
             )
-            print(f"[RetryFailedExecutor] 查询到 {len(failed_articles) if failed_articles else 0} 条失败文章")
+            logger.info("查询到 %s 条失败文章", len(failed_articles) if failed_articles else 0)
 
             if not failed_articles:
                 return {
@@ -420,7 +623,7 @@ class CleanupLowQualityExecutor(TaskExecutor):
         """
         from datetime import timedelta
 
-        print(f"[CleanupLowQualityExecutor] 开始执行任务 {task_id}")
+        logger.info("开始执行低质量清理任务 %s", task_id)
 
         # 创建新的数据库会话
         from src.core.database import get_async_session
@@ -466,7 +669,7 @@ class CleanupLowQualityExecutor(TaskExecutor):
                     await article_repo.update(article["id"], {"status": "low_quality"})
                     article_marked += 1
 
-                print(f"[CleanupLowQualityExecutor] 标记了 {article_marked} 篇文章为低质量")
+                logger.info("标记了 %s 篇文章为低质量", article_marked)
 
                 if on_progress:
                     on_progress(60, 100, f"已标记 {article_marked} 篇文章，正在清理待爬文章...")
@@ -493,7 +696,7 @@ class CleanupLowQualityExecutor(TaskExecutor):
                     await pending_repo.update_status(pending["id"], PendingArticleStatus.LOW_QUALITY)
                     pending_marked += 1
 
-                print(f"[CleanupLowQualityExecutor] 标记了 {pending_marked} 条待爬文章为低质量")
+                logger.info("标记了 %s 条待爬文章为低质量", pending_marked)
 
                 if on_progress:
                     on_progress(100, 100, "清理完成")
@@ -526,6 +729,120 @@ class CleanupLowQualityExecutor(TaskExecutor):
                 raise
 
 
+class AutoSearchExecutor(TaskExecutor):
+    """
+    关键词自动搜索执行器
+    """
+
+    async def execute(
+        self,
+        task_id: int,
+        params: dict[str, Any],
+        on_progress: Callable[[int, int, str | None], None] | None = None,
+        on_event: Callable[[TaskEventType, dict[str, Any] | None], None] | None = None,
+        check_cancelled: Callable[[], bool] | None = None,
+    ) -> dict[str, Any]:
+        from src.core.database import get_async_session
+        from src.services.schedule_executor import ScheduleExecutor
+
+        async with get_async_session() as db:
+            executor = ScheduleExecutor()
+
+            if on_event:
+                on_event(TaskEventType.STARTED, {"message": "开始执行关键词自动搜索"})
+            if on_progress:
+                on_progress(0, 100, "正在搜索关键词")
+
+            await executor._execute_keyword_search(db, {"config": params})
+
+            if on_progress:
+                on_progress(100, 100, "关键词搜索完成")
+            if on_event:
+                on_event(TaskEventType.COMPLETED, {"message": "关键词搜索完成"})
+
+            return {
+                "schedule_id": params.get("schedule_id"),
+                "message": "关键词搜索完成",
+            }
+
+
+class AIChatExecutor(TaskExecutor):
+    """AI 对话执行器。"""
+
+    async def execute(
+        self,
+        task_id: int,
+        params: dict[str, Any],
+        on_progress: Callable[[int, int, str | None], None] | None = None,
+        on_event: Callable[[TaskEventType, dict[str, Any] | None], None] | None = None,
+        check_cancelled: Callable[[], bool] | None = None,
+    ) -> dict[str, Any]:
+        from src.core.database import get_async_session
+
+        _ = task_id
+        conversation_id = int(params["conversation_id"])
+        message = params["message"]
+        mode = params.get("mode", "chat")
+        web_search_enabled = bool(params.get("web_search_enabled", False))
+        internal_search_enabled = bool(params.get("internal_search_enabled", False))
+
+        async with get_async_session() as db:
+            conv_repo = ConversationRepository(db)
+            agent = AIAgentService(db)
+            full_response = ""
+            last_state_token: str | None = None
+
+            if not await conv_repo.fetch_by_id(conversation_id):
+                raise ValueError(f"对话不存在: {conversation_id}")
+
+            def emit(event_type: str, payload: dict[str, Any]) -> None:
+                if on_event:
+                    on_event(TaskEventType.INFO, {"stream_event": event_type, **payload})
+
+            def process_state(state) -> None:
+                nonlocal last_state_token
+                payload = {
+                    "conversation_id": conversation_id,
+                    "stage": state.stage,
+                    "keywords": state.keywords or [],
+                    "internal_results": state.internal_results or [],
+                    "web_results": state.web_results or [],
+                    "progress": state.progress,
+                    "total": state.total,
+                    "message": state.message,
+                }
+                token = json.dumps(payload, ensure_ascii=False, sort_keys=True, default=str)
+                if token == last_state_token:
+                    return
+                last_state_token = token
+                if on_progress:
+                    on_progress(state.progress, state.total, state.message)
+                emit("state", payload)
+
+            async for chunk in agent.chat(
+                conversation_id=conversation_id,
+                message=message,
+                mode=mode,
+                web_search_enabled=web_search_enabled,
+                internal_search_enabled=internal_search_enabled,
+                on_state_update=process_state,
+                persist_user_message=False,
+            ):
+                if check_cancelled and check_cancelled():
+                    raise RuntimeError("AI 对话已取消")
+                full_response += chunk
+                emit("chunk", {"conversation_id": conversation_id, "text": chunk})
+
+            emit("end", {"conversation_id": conversation_id, "full_response": full_response})
+            return {
+                "conversation_id": conversation_id,
+                "full_response": full_response,
+                "mode": mode,
+                "web_search_enabled": web_search_enabled,
+                "internal_search_enabled": internal_search_enabled,
+            }
+
+
 # 注册执行器
 from src.services.task_manager import TaskExecutorRegistry
 
@@ -533,3 +850,6 @@ TaskExecutorRegistry.register("crawl_pending", CrawlPendingExecutor)
 TaskExecutorRegistry.register("retry_failed", RetryFailedExecutor)
 TaskExecutorRegistry.register("sitemap_sync", SitemapSyncExecutor)
 TaskExecutorRegistry.register("cleanup_low_quality", CleanupLowQualityExecutor)
+TaskExecutorRegistry.register("auto_search", AutoSearchExecutor)
+TaskExecutorRegistry.register("generate_report", ReportGenerationExecutor)
+TaskExecutorRegistry.register("ai_chat", AIChatExecutor)

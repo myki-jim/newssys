@@ -6,7 +6,7 @@
 from datetime import datetime, timedelta
 from typing import List, Union
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query
 
 from src.api.schemas import (
     APIResponse,
@@ -17,7 +17,7 @@ from src.api.schemas import (
 )
 from src.core.database import get_async_session
 from src.repository.schedule_repository import ScheduleRepository
-from src.services.schedule_executor import ScheduleExecutor
+from src.services.scheduler_service import get_scheduler
 
 router = APIRouter(prefix="/schedules", tags=["定时任务"])
 
@@ -126,68 +126,20 @@ async def execute_schedule(schedule_id: int):
         if schedule["status"] != "active":
             raise HTTPException(status_code=400, detail="任务未激活，无法执行")
 
-        # 创建执行任务
-        from src.repository.task_repository import TaskRepository
-
-        task_repo = TaskRepository(db)
-
-        # 根据任务类型选择合适的 task_type
-        task_type_mapping = {
-            "sitemap_crawl": "sitemap_sync",
-            "article_crawl": "crawl_pending",
-            "keyword_search": "auto_search",
-        }
-        mapped_type = task_type_mapping.get(schedule["schedule_type"], "crawl_pending")
-
-        # 直接插入数据库，不使用 TaskCreate
-        import json
-        from datetime import datetime
-
-        task_data = {
-            "task_type": mapped_type,
-            "status": "pending",
-            "title": f"执行定时任务: {schedule['name']}",
-            "params": json.dumps({"schedule_id": schedule_id}),
-            "progress_current": 0,
-            "progress_total": 0,
-            "created_at": datetime.now().isoformat(),
-            "updated_at": datetime.now().isoformat(),
-        }
-        task_id = await task_repo.insert("tasks", task_data, returning="id")
-
-        # 直接执行（不使用后台任务，便于调试）
-        try:
-            executor = ScheduleExecutor()
-            await executor.execute_schedule(schedule_id, task_id)
-
-            # 获取更新后的任务状态
-            updated_schedule = await repo.get_by_id(schedule_id)
-
-            return APIResponse(
-                success=True,
-                data={
-                    "task_id": task_id,
-                    "schedule_id": schedule_id,
-                    "status": "completed",
-                    "execution_count": updated_schedule.get("execution_count", 0),
-                },
-            )
-        except Exception as e:
-            # 返回错误信息
-            import traceback
-
-            error_detail = traceback.format_exc()
-
-            return APIResponse(
-                success=False,
-                data={
-                    "task_id": task_id,
-                    "schedule_id": schedule_id,
-                    "status": "failed",
-                    "error": str(e),
-                    "detail": error_detail,
-                },
-            )
+    try:
+        result = await get_scheduler().dispatch_schedule_by_id(schedule_id)
+        return APIResponse(
+            success=True,
+            data={
+                "schedule_id": schedule_id,
+                "status": "dispatched",
+                **result,
+            },
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
 
 
 @router.post("/{schedule_id}/pause", response_model=APIResponse[ScheduleResponse])

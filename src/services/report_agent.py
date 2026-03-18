@@ -4,8 +4,10 @@
 """
 
 import asyncio
+import inspect
 import logging
-from collections.abc import AsyncGenerator, Callable
+import re
+from collections.abc import AsyncGenerator, Awaitable, Callable
 from datetime import datetime
 from typing import Any
 
@@ -19,7 +21,9 @@ from src.core.models import (
     ReportTemplate,
 )
 from src.repository.article_repository import ArticleRepository
+from src.repository.source_repository import SourceRepository
 from src.services.article_clustering import ArticleClusteringService
+from src.services.citation import ReferenceManager
 from src.services.event_extraction import EventSelectionService
 from src.services.keyword_generator import KeywordGenerator
 from src.services.openai_client import get_openai_client
@@ -41,12 +45,13 @@ class ReportGenerationAgent:
         self.event_service = EventSelectionService()
         self.keyword_generator = KeywordGenerator()
         self.ai_client = get_openai_client()
+        self.reference_manager = ReferenceManager()
 
     async def generate_report(
         self,
         report: Report,
         template: ReportTemplate | None = None,
-        on_state_update: Callable[[ReportAgentState], None] | None = None,
+        on_state_update: Callable[[ReportAgentState], Awaitable[None] | None] | None = None,
         on_section_stream: Callable[[str, str], None] | None = None,
     ) -> AsyncGenerator[ReportAgentState, None]:
         """
@@ -62,6 +67,7 @@ class ReportGenerationAgent:
             Agent 状态
         """
         try:
+            self.reference_manager = ReferenceManager()
             # 阶段1：初始化
             yield await self._update_state(
                 ReportAgentStage.INITIALIZING,
@@ -124,9 +130,28 @@ class ReportGenerationAgent:
             yield await self._update_state(
                 ReportAgentStage.CLUSTERING_ARTICLES,
                 30,
-                "正在聚类去重文章...",
-                on_state_update,
+                "正在对高相关候选文章做聚类去重...",
             )
+
+            async def handle_clustering_progress(progress_data: dict[str, Any]) -> None:
+                current = max(int(progress_data.get("current", 0)), 0)
+                total = max(int(progress_data.get("total", 0)), 1)
+                clustering_progress = min(39, 30 + int((current / total) * 9))
+                await self._update_state(
+                    ReportAgentStage.CLUSTERING_ARTICLES,
+                    clustering_progress,
+                    progress_data.get("message", "正在聚类去重文章..."),
+                    on_state_update,
+                    {
+                        "total_articles": total_articles,
+                        "cluster_progress": {
+                            "current": current,
+                            "total": total,
+                            "comparisons": int(progress_data.get("comparisons", 0)),
+                            "cluster_count": int(progress_data.get("cluster_count", 0)),
+                        },
+                    },
+                )
 
             clusters = await self.clustering_service.cluster_articles_by_timerange(
                 start_date=report.time_range_start,
@@ -134,6 +159,7 @@ class ReportGenerationAgent:
                 language=report.language,
                 keywords=keywords,  # 传递关键字用于评分筛选
                 min_score=20.0,  # 最低分数阈值
+                on_progress=handle_clustering_progress,
             )
 
             clustered_articles = len(clusters)
@@ -183,11 +209,11 @@ class ReportGenerationAgent:
 
             # 阶段5：生成板块（流式，每个板块完成后立即发送）
             sections = []
-            section_templates = template.section_template if template else [
-                {"title": "重点事件", "description": "本期最重要的新闻事件"},
-                {"title": "详细分析", "description": "事件的深度分析"},
-                {"title": "总结", "description": "本期总结"},
-            ]
+            section_templates = (
+                template.section_template
+                if template and template.section_template
+                else self._default_section_templates(report.title)
+            )
 
             for i, section_template in enumerate(section_templates):
                 section_title = section_template.get("title", f"板块{i+1}")
@@ -236,6 +262,13 @@ class ReportGenerationAgent:
                     section_title=section_title,
                     section_description=section_template.get("description", ""),
                     on_stream_chunk=stream_callback,
+                )
+                section_content["content"] = await self._revise_section_for_quality(
+                    content=section_content["content"],
+                    events=events,
+                    section_title=section_title,
+                    section_description=section_template.get("description", ""),
+                    custom_prompt=report.custom_prompt,
                 )
 
                 sections.append(section_content)
@@ -315,7 +348,7 @@ class ReportGenerationAgent:
         stage: ReportAgentStage,
         progress: int,
         message: str,
-        on_state_update: Callable[[ReportAgentState], None] | None = None,
+        on_state_update: Callable[[ReportAgentState], Awaitable[None] | None] | None = None,
         data: dict[str, Any] | None = None,
     ) -> ReportAgentState:
         """更新并返回状态"""
@@ -328,9 +361,50 @@ class ReportGenerationAgent:
         )
 
         if on_state_update:
-            on_state_update(state)
+            maybe_awaitable = on_state_update(state)
+            if inspect.isawaitable(maybe_awaitable):
+                await maybe_awaitable
 
         return state
+
+    def _default_section_templates(self, report_title: str) -> list[dict[str, str]]:
+        return [
+            {
+                "title": "执行摘要与核心判断",
+                "description": (
+                    f"围绕“{report_title}”给出完整的研究摘要。需要用连续段落先交代研究对象、"
+                    "核心发现、主要矛盾和最重要的判断，并明确哪些结论最值得决策者关注。"
+                ),
+            },
+            {
+                "title": "事态演变与关键时间线",
+                "description": (
+                    "按照时间顺序重建近阶段事态如何升级，梳理触发点、升级节点、关键政策动作和舆论拐点。"
+                    "不能只罗列事件，必须解释为什么这些节点改变了局势。"
+                ),
+            },
+            {
+                "title": "冲突起因、驱动因素与战略意图",
+                "description": (
+                    "深入分析冲突或议题背后的结构性成因、短期诱因、相关国家或组织的战略目标、"
+                    "以及安全、经济、政治和意识形态层面的驱动因素。"
+                ),
+            },
+            {
+                "title": "国际社会态度、政策反应与分歧",
+                "description": (
+                    "分析主要国家、国际组织、地区力量、市场主体和舆论系统的态度差异，"
+                    "说明谁支持、谁反对、谁保持克制，以及这种分歧对局势意味着什么。"
+                ),
+            },
+            {
+                "title": "风险评估、情景推演与结论",
+                "description": (
+                    "在现有证据基础上评估局势未来可能演化出的主要风险、约束条件和几个最值得关注的情景，"
+                    "最后形成完整的研究性结论，但不要写成空洞总结。"
+                ),
+            },
+        ]
 
     async def _generate_single_section(
         self,
@@ -360,25 +434,33 @@ class ReportGenerationAgent:
         # 否则使用默认提示词
         if template and template.system_prompt:
             system_prompt = template.system_prompt
-            # 附加图片使用要求（确保有图片时尽量添加）
-            system_prompt += "\n\n## 图片使用要求\n"
-            system_prompt += "- 如果事件相关的文章包含图片，请在报告中引用这些图片，使报告图文并茂\n"
-            system_prompt += "- 使用 Markdown 图片语法：![图片描述](图片URL)\n"
-            system_prompt += "- 图片应放在相关段落的开头或适当位置，增强可读性\n"
+            system_prompt += (
+                "\n\n补充写作规则：\n"
+                "1. 正文必须以完整段落写作，不要使用项目符号、编号清单或“要点式”表达。\n"
+                "2. 每一个核心判断都必须给出明确来源，使用 [1]、[2] 这样的引用标记。\n"
+                "3. 每段都要展开论证背景、因果链条、利益相关方立场和影响，而不是只下结论。\n"
+                "4. 写作风格要接近国际研究机构、智库和学术综述，避免口号、套话和空泛总结。\n"
+                "5. 如果存在多方立场分歧，必须交代主要国家、国际组织或市场参与者的不同态度，并说明依据。\n"
+                "6. 除“参考文献”部分外，不要使用列表符号。\n"
+                "7. 每个自然段都应足够长，通常不少于5句，不要写成两三句就结束的短段。\n"
+                "8. 不要使用“一、二、三”或“首先、其次、最后”来拼接空洞提纲。\n"
+            )
         else:
             system_prompt = (
-                "你是一个专业的新闻分析助手，负责根据给定的新闻事件生成结构化的新闻报告。\n\n"
-                "请遵循以下规则：\n"
-                "1. 基于事件给出准确、全面的分析\n"
-                "2. 使用专业、客观、通顺的语言\n"
-                "3. 报告应结构化、易读\n"
-                "4. 使用Markdown格式\n"
-                "5. 标题必须是通顺的完整句子，不要用关键词堆砌\n"
-                "6. 每个事件分析必须列出参考文献（文章标题、链接、发布时间）\n"
-                "7. 如果文章中有图片，请在报告中引用这些图片，使报告图文并茂\n"
-                "8. 使用 Markdown 图片语法引用：![图片描述](图片URL)\n"
-                "9. 相关图片应放在事件分析的开头或适当位置，增强可读性\n"
-                "10. 优先使用图片来增强报告的可读性和专业性"
+                "你是一位世界级国际问题研究员和政策分析作者，负责基于给定新闻证据撰写研究机构风格的深度报告。\n\n"
+                "写作规则如下：\n"
+                "1. 只能依据给定材料写作，不得补造事实。\n"
+                "2. 必须使用 Markdown，但正文必须采用长段落 prose，不要使用项目符号、编号清单或“点状”表达。\n"
+                "3. 每个核心事实与判断都必须带来源标记 [1]、[2]。\n"
+                "4. 每一段都要展开背景、因果链条、参与方动机、政策含义和潜在影响。\n"
+                "5. 如果材料允许，必须呈现时间线、冲突起因、各方立场、国际反应、风险演变和未来情景。\n"
+                "6. 语言必须专业、克制、分析性强，接近国际智库、研究报告和学术综述，而不是新闻快讯。\n"
+                "7. 标题和小标题必须是完整而有信息量的表述，不能只是关键词堆砌。\n"
+                "8. 如果文章中有图片，可适度引用，但图片不是重点，证据和分析才是重点。\n"
+                "9. 不要只做概括，必须用材料支撑判断并交代不同国家、组织和舆论主体的态度差异。\n"
+                "10. 除“参考文献”标题外，不要单独输出空洞的结论句。\n"
+                "11. 每个自然段都必须充分展开，避免短段落、摘要腔和新闻播报腔。\n"
+                "12. 不要写“第一，第二，第三”式提纲文本，要把分析自然组织进连续论述之中。"
             )
 
         if custom_prompt:
@@ -390,14 +472,23 @@ class ReportGenerationAgent:
         events_context = await self._build_events_context_with_articles_and_images(events)
 
         # 构建用户消息（简洁，只提供必要信息，详细格式由模板的 system_prompt 控制）
-        user_message = f"""请根据以下事件，生成报告的"{section_title}"板块。
+        user_message = f"""请根据以下证据材料，撰写报告的“{section_title}”板块。
 
 板块描述：{section_description}
 
-事件列表（共 {len(events)} 个事件）：
+可用事件与证据材料（共 {len(events)} 个事件）：
 {events_context}
 
-请开始生成：
+请严格执行以下要求：
+1. 输出必须是连贯长段落，不要使用任何项目符号或编号列表。
+2. 每段都要充分展开，不能只给一句判断；每段通常至少应达到五句以上的完整展开。
+3. 每个核心事实与分析判断都要在句末或段末附上引用标记，如 [1][2]。
+4. 要优先呈现因果关系、各方动机、政策影响、国际反应和争议点。
+5. 如果证据不足，不要硬写结论，要明确说明不确定性并继续基于现有材料分析。
+6. 如果同一问题存在多篇材料，请综合比较它们的差异，而不是重复改写同一篇内容。
+7. 不要输出“首先、其次、最后”式浅层套路，要像成熟研究报告一样自然展开。
+
+现在开始撰写这一板块。
 """
 
         # 调用 AI 生成板块内容
@@ -431,6 +522,82 @@ class ReportGenerationAgent:
             "description": section_description,
             "event_count": len(events),
         }
+
+    async def _revise_section_for_quality(
+        self,
+        *,
+        content: str,
+        events: list[dict[str, Any]],
+        section_title: str,
+        section_description: str,
+        custom_prompt: str | None,
+    ) -> str:
+        if not self._section_needs_rewrite(content):
+            return content
+
+        logger.info(f"板块 '{section_title}' 触发质量重写")
+        evidence_context = await self._build_events_context_with_articles_and_images(events)
+        rewrite_prompt = (
+            f"请重写报告板块“{section_title}”。\n\n"
+            f"板块目标：{section_description}\n\n"
+            "当前版本存在明显问题：它可能过短、像提纲、缺少引用，或没有充分展开。\n"
+            "你必须将其改写成研究机构风格的完整章节，满足以下条件：\n"
+            "1. 必须全部使用完整段落，不要使用项目符号、编号列表或提纲式句子。\n"
+            "2. 每个核心判断必须给出 [1]、[2] 这样的引用。\n"
+            "3. 需要显著展开背景、因果、各方立场、影响和不确定性。\n"
+            "4. 如果原文已经有可用分析，可保留其有价值部分，但必须重构成更完整的 prose。\n"
+            "5. 不要写参考文献列表，只重写正文板块。\n"
+        )
+        if custom_prompt:
+            rewrite_prompt += f"6. 额外用户要求：{custom_prompt}\n"
+
+        rewrite_prompt += (
+            "\n现有草稿如下：\n"
+            f"{content}\n\n"
+            "可用证据如下：\n"
+            f"{evidence_context}\n\n"
+            "请直接输出重写后的完整板块正文。"
+        )
+
+        revised = ""
+        try:
+            async for chunk in self.ai_client.chat(
+                user_message=rewrite_prompt,
+                system_prompt=(
+                    "你是一位国际问题研究报告作者。你的任务是把低质量草稿改写成"
+                    "带引用、展开充分、具有研究机构风格的完整章节。"
+                ),
+            ):
+                revised += chunk
+        except Exception as exc:
+            logger.error(f"板块 '{section_title}' 重写失败: {exc}", exc_info=True)
+            return content
+
+        return revised or content
+
+    def _section_needs_rewrite(self, content: str) -> bool:
+        normalized = (content or "").strip()
+        if not normalized:
+            return True
+        if len(normalized) < 900:
+            return True
+        if len(re.findall(r"\[\d+\]", normalized)) < 2:
+            return True
+        bullet_like_patterns = (
+            r"(?m)^\s*[-*•]\s+",
+            r"(?m)^\s*\d+[.)]\s+",
+            r"(?m)^\s*[一二三四五六七八九十]+[、.]\s+",
+        )
+        if any(re.search(pattern, normalized) for pattern in bullet_like_patterns):
+            return True
+        short_paragraphs = [p.strip() for p in re.split(r"\n\s*\n", normalized) if p.strip()]
+        if short_paragraphs and sum(1 for p in short_paragraphs if len(p) < 120) >= max(2, len(short_paragraphs) // 2):
+            return True
+        if re.search(r"(?m)^\s*[一二三四五六七八九十]+[、.]", normalized):
+            return True
+        if re.search(r"首先|其次|再次|最后", normalized):
+            return True
+        return False
 
     async def _build_events_context_with_articles(self, events: list[dict[str, Any]]) -> str:
         """构建事件上下文（包含文章列表）"""
@@ -492,6 +659,7 @@ class ReportGenerationAgent:
             return "无相关事件"
 
         context_parts = []
+        source_names = await self._get_source_names()
 
         # 使用新的数据库会话避免事务冲突
         from src.core.database import get_async_session
@@ -509,13 +677,17 @@ class ReportGenerationAgent:
                 images_section = ""
 
                 if article_ids:
-                    articles_list = "\n   相关文章："
+                    articles_list = "\n   证据材料："
                     all_images = []
 
                     # 从数据库获取文章详情（使用新会话）
-                    for article_id in article_ids[:10]:  # 最多显示10篇
+                    for article_id in article_ids[:12]:  # 最多显示12篇
                         article = await new_article_repo.get_by_id(article_id)
                         if article:
+                            citation_index = self.reference_manager.add_reference(
+                                article,
+                                source_name=source_names.get(article.get("source_id")),
+                            )
                             pub_time_str = article.get('publish_time', '')
                             if pub_time_str:
                                 try:
@@ -529,10 +701,19 @@ class ReportGenerationAgent:
                             else:
                                 pub_time = "未知时间"
 
-                            articles_list += f"\n   - {article.get('title', '无标题')}"
-                            articles_list += f"\n     发布时间：{pub_time}"
+                            content = article.get("content") or ""
+                            normalized_excerpt = " ".join(str(content).split())
+                            if len(normalized_excerpt) > 280:
+                                normalized_excerpt = normalized_excerpt[:280].rstrip() + "..."
+
+                            source_name = source_names.get(article.get("source_id")) or f"Source {article.get('source_id')}"
+                            articles_list += f"\n   [{citation_index}] {article.get('title', '无标题')}"
+                            articles_list += f"\n   来源：{source_name}"
+                            articles_list += f"\n   发布时间：{pub_time}"
                             if article.get('url'):
-                                articles_list += f"\n     链接：{article['url']}"
+                                articles_list += f"\n   链接：{article['url']}"
+                            if normalized_excerpt:
+                                articles_list += f"\n   可引用摘录：{normalized_excerpt}"
 
                             # 提取图片信息
                             extra_data = article.get('extra_data', {})
@@ -560,6 +741,14 @@ class ReportGenerationAgent:
 
         return "\n".join(context_parts)
 
+    async def _get_source_names(self) -> dict[int, str]:
+        repo = SourceRepository(self.db)
+        try:
+            sources = await repo.fetch_many(limit=5000, offset=0, order_by="id ASC")
+        except Exception:
+            return {}
+        return {item["id"]: item.get("site_name", f"Source {item['id']}") for item in sources if item.get("id") is not None}
+
     async def _generate_sections(
         self,
         events: list[dict[str, Any]],
@@ -584,11 +773,7 @@ class ReportGenerationAgent:
             section_templates = template.section_template
         else:
             # 默认板块
-            section_templates = [
-                {"title": "重点事件", "description": "本期最重要的新闻事件"},
-                {"title": "详细分析", "description": "事件的深度分析"},
-                {"title": "总结", "description": "本期总结"},
-            ]
+            section_templates = self._default_section_templates("综合新闻研究报告")
 
         sections = []
         for i, section_template in enumerate(section_templates):
@@ -651,20 +836,21 @@ class ReportGenerationAgent:
         Returns:
             完整报告内容（Markdown）
         """
-        # 构建报告头部
+        overview = (
+            f"本报告覆盖 {report.time_range_start.strftime('%Y-%m-%d')} 至 "
+            f"{report.time_range_end.strftime('%Y-%m-%d')} 的新闻材料，并于 "
+            f"{datetime.now().strftime('%Y-%m-%d %H:%M:%S')} 生成。"
+            f"本轮分析共处理 {statistics.get('total_articles', 0)} 篇文章，"
+            f"去重后形成 {statistics.get('clustered_articles', 0)} 个核心新闻簇，"
+            f"最终抽取 {statistics.get('event_count', 0)} 个重点事件作为主分析对象。"
+            "下文将围绕这些证据材料，按照研究报告而非新闻快讯的方式展开论证。"
+        )
+
         header = f"""# {report.title}
 
-**时间范围**：{report.time_range_start.strftime('%Y-%m-%d')} 至 {report.time_range_end.strftime('%Y-%m-%d')}
+## 报告说明
 
-**生成时间**：{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
-
----
-
-## 概览
-
-- **文章总数**：{statistics.get('total_articles', 0)}
-- **去重后文章**：{statistics.get('clustered_articles', 0)}
-- **重点事件数**：{statistics.get('event_count', 0)}
+{overview}
 
 ---
 
@@ -677,12 +863,121 @@ class ReportGenerationAgent:
             sections_content += section['content']
             sections_content += "\n\n---\n\n"
 
-        # 添加事件列表
-        events_content = "\n## 重点事件列表\n\n"
-        for i, event in enumerate(events, 1):
-            events_content += f"{i}. **{event['event_title']}**\n"
-            events_content += f"   - {event['event_summary']}\n"
-            events_content += f"   - 关键词：{', '.join(event['keywords'][:5])}\n"
-            events_content += f"   - 相关文章：{event['article_count']}篇\n\n"
+        events_paragraphs = []
+        for event in events:
+            events_paragraphs.append(
+                f"“{event['event_title']}”是本期识别出的重点议题之一。"
+                f"该事件涉及 {event['article_count']} 篇相关文章，"
+                f"其核心摘要为：{event['event_summary']}。"
+                f"模型在聚类与排序后为其赋予的重要性分值为 {event['importance_score']:.2f}，"
+                f"相关关键词包括 {', '.join(event['keywords'][:5])}。"
+            )
+        events_content = "\n## 核心事件说明\n\n" + "\n\n".join(events_paragraphs)
 
-        return header + sections_content + events_content
+        references_content = self._build_references_section()
+
+        draft = header + sections_content + events_content + "\n\n---\n\n" + references_content
+        return await self._polish_full_report(
+            draft=draft,
+            report=report,
+            events=events,
+            statistics=statistics,
+        )
+
+    def _build_references_section(self) -> str:
+        if not self.reference_manager.references:
+            return "## 参考文献\n\n本报告未记录到可用参考文献。"
+
+        lines = ["## 参考文献", ""]
+        for index, ref in enumerate(self.reference_manager.references.values(), 1):
+            published = ref.publish_time.strftime("%Y-%m-%d %H:%M") if isinstance(ref.publish_time, datetime) else str(ref.publish_time or "未知时间")
+            source_name = ref.source_name or "未知来源"
+            author = f"{ref.author}." if ref.author else ""
+            lines.append(
+                f"[{index}] {author} [{ref.title}]({ref.url}). {source_name}. 发布时间：{published}."
+            )
+            lines.append("")
+        return "\n".join(lines)
+
+    async def _polish_full_report(
+        self,
+        *,
+        draft: str,
+        report: Report,
+        events: list[dict[str, Any]],
+        statistics: dict[str, int],
+    ) -> str:
+        if not self._report_needs_polish(draft):
+            return draft
+
+        evidence_context = await self._build_events_context_with_articles_and_images(events)
+        current = draft
+        for attempt in range(2):
+            logger.info(f"最终报告触发统一润色重写，第 {attempt + 1} 次")
+            prompt = (
+                f"请将下面这份报告草稿重写为成熟研究机构风格的最终版本，标题是《{report.title}》。\n\n"
+                "必须满足以下条件：\n"
+                "1. 除“参考文献”部分外，正文全部使用长段落 prose，不要使用项目符号、编号列表、"
+                "“一、二、三”或“首先、其次、最后”式提纲表达。\n"
+                "2. 每个核心判断必须保留或补上引用标记 [1][2]。\n"
+                "3. 段落必须充分展开，不能短句堆砌；要有背景、因果、立场、影响和不确定性分析。\n"
+                "4. 保留现有章节结构，但把语言改成真正的研究报告风格。\n"
+                "5. 最后的“参考文献”部分必须采用 Markdown 可点击链接格式，例如 [标题](https://...)。\n"
+                "6. 不要添加草稿里没有依据的新事实。\n"
+                "7. 如果草稿里有列表句式，必须全部改写成自然段，不允许残留。\n\n"
+                "统计信息：\n"
+                f"文章总数={statistics.get('total_articles', 0)}，"
+                f"去重后事件簇={statistics.get('clustered_articles', 0)}，"
+                f"重点事件={statistics.get('event_count', 0)}。\n\n"
+                "可用证据摘要：\n"
+                f"{evidence_context}\n\n"
+                "草稿如下：\n"
+                f"{current}\n\n"
+                "请直接输出重写后的完整报告。"
+            )
+
+            polished = ""
+            try:
+                async for chunk in self.ai_client.chat(
+                    user_message=prompt,
+                    system_prompt=(
+                        "你是一位国际事务研究机构的主笔作者。你的任务是把现有草稿改写成"
+                        "完整、厚重、带引用、带来源链接的高质量研究报告。"
+                    ),
+                ):
+                    polished += chunk
+            except Exception as exc:
+                logger.error(f"最终报告润色失败: {exc}", exc_info=True)
+                return current
+
+            if polished:
+                current = polished
+            if not self._report_needs_polish(current):
+                return current
+        return current
+
+    def _report_needs_polish(self, draft: str) -> bool:
+        text = (draft or "").strip()
+        if not text:
+            return True
+        if "## 参考文献" not in text:
+            return True
+        if len(re.findall(r"\[\d+\]", text)) < 6:
+            return True
+        body_without_refs = text.split("## 参考文献", 1)[0]
+        if re.search(r"(?m)^\s*[-*•]\s+", body_without_refs):
+            return True
+        if re.search(r"(?m)^\s*\d+[.)]\s+", body_without_refs):
+            return True
+        if re.search(r"(?m)^\s*[一二三四五六七八九十]+[、.]", body_without_refs):
+            return True
+        if re.search(r"首先|其次|再次|最后", body_without_refs):
+            return True
+        if "](http" not in text:
+            return True
+        paragraphs = [p.strip() for p in re.split(r"\n\s*\n", body_without_refs) if p.strip() and not p.strip().startswith("#")]
+        if paragraphs and sum(1 for p in paragraphs if len(p) < 260) >= max(2, len(paragraphs) // 3):
+            return True
+        if paragraphs and sum(1 for p in paragraphs if len(p) < 180) >= max(3, len(paragraphs) // 2):
+            return True
+        return False

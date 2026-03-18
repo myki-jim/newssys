@@ -831,6 +831,7 @@ async def cleanup_articles(
     标记后的文章/待爬文章将被隐藏，不会参与任何操作或爬取
     """
     from datetime import timedelta
+    from src.core.models import PendingArticleStatus
     from src.repository.pending_article_repository import PendingArticleRepository
 
     article_repo = ArticleRepository(db)
@@ -896,9 +897,9 @@ async def cleanup_articles(
     # 批量更新待爬文章状态
     for pending in pending_to_mark:
         try:
-            await pending_repo.update(
+            await pending_repo.update_status(
                 pending["id"],
-                {"status": "low_quality"}
+                PendingArticleStatus.LOW_QUALITY,
             )
             pending_marked_count += 1
         except Exception as e:

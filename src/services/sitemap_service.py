@@ -4,6 +4,7 @@ Sitemap 服务
 """
 
 import logging
+import random
 import re
 from datetime import datetime, timedelta, timezone
 from typing import Any
@@ -25,6 +26,8 @@ from src.repository.source_repository import SourceRepository
 
 
 logger = logging.getLogger(__name__)
+
+MAX_PENDING_ARTICLES_PER_SITEMAP = 300
 
 
 class SitemapService:
@@ -59,6 +62,78 @@ class SitemapService:
     async def close(self) -> None:
         """关闭 HTTP 客户端"""
         await self.client.aclose()
+
+    @staticmethod
+    def _normalize_datetime(value: datetime | None) -> datetime | None:
+        if value is None:
+            return None
+        if value.tzinfo is None:
+            return value.replace(tzinfo=timezone.utc)
+        return value.astimezone(timezone.utc)
+
+    def _parse_optional_datetime(self, value: str | None) -> datetime | None:
+        if not value:
+            return None
+        text = value.strip()
+        if not text:
+            return None
+        candidates = (text, text.replace("Z", "+00:00"))
+        for candidate in candidates:
+            try:
+                return self._normalize_datetime(datetime.fromisoformat(candidate))
+            except ValueError:
+                continue
+        return None
+
+    def _calculate_sitemap_priority(
+        self,
+        lastmod: datetime | None,
+        fetch_status: str | None,
+        last_fetched: datetime | None,
+        article_count: int,
+    ) -> float:
+        """按新鲜度优先、失败降权、轻微随机扰动计算 sitemap 优先级。"""
+        now = datetime.now(timezone.utc)
+        normalized_lastmod = self._normalize_datetime(lastmod)
+        normalized_last_fetched = self._normalize_datetime(last_fetched)
+
+        if normalized_lastmod is None:
+            recency_score = 0.45
+        else:
+            age_hours = max((now - normalized_lastmod).total_seconds() / 3600, 0)
+            if age_hours <= 6:
+                recency_score = 1.4
+            elif age_hours <= 24:
+                recency_score = 1.1
+            elif age_hours <= 72:
+                recency_score = 0.85
+            elif age_hours <= 168:
+                recency_score = 0.55
+            else:
+                recency_score = 0.2
+
+        status_key = (fetch_status or "").lower()
+        if status_key == SitemapFetchStatus.FAILED.value:
+            if normalized_last_fetched is None:
+                failure_penalty = 0.12
+            else:
+                age_minutes = max((now - normalized_last_fetched).total_seconds() / 60, 0)
+                if age_minutes < 30:
+                    failure_penalty = 0.03
+                elif age_minutes < 120:
+                    failure_penalty = 0.08
+                elif age_minutes < 720:
+                    failure_penalty = 0.16
+                else:
+                    failure_penalty = 0.3
+        elif status_key == SitemapFetchStatus.SUCCESS.value:
+            failure_penalty = 0.9
+        else:
+            failure_penalty = 1.0
+
+        article_bonus = min(1.15, 1.0 + min(article_count, 2000) / 10000)
+        jitter = random.uniform(0.92, 1.08)
+        return recency_score * failure_penalty * article_bonus * jitter
 
     async def fetch_robots_sitemaps(self, source_id: int) -> list[Sitemap]:
         """
@@ -179,7 +254,10 @@ class SitemapService:
             from src.core.models import SitemapUpdate
             await self.sitemap_repo.update_by_id(
                 sitemap_id,
-                SitemapUpdate(fetch_status=SitemapFetchStatus.SUCCESS)
+                SitemapUpdate(
+                    fetch_status=SitemapFetchStatus.SUCCESS,
+                    article_count=len(result.get("articles", [])),
+                )
             )
             await self.sitemap_repo.update_last_fetched(sitemap_id)
 
@@ -188,12 +266,14 @@ class SitemapService:
         except httpx.HTTPError as e:
             logger.error(f"Failed to fetch sitemap {sitemap_url}: {e}")
             from src.core.models import SitemapUpdate
-            await self.sitemap_repo.update_by_id(sitemap_id, SitemapUpdate(fetch_status=SitemapFetchStatus.SUCCESS))
+            await self.sitemap_repo.update_by_id(sitemap_id, SitemapUpdate(fetch_status=SitemapFetchStatus.FAILED))
+            await self.sitemap_repo.update_last_fetched(sitemap_id)
             return {"leaf_sitemaps": [], "articles": []}
         except Exception as e:
             logger.error(f"Error parsing sitemap {sitemap_url}: {e}")
             from src.core.models import SitemapUpdate
-            await self.sitemap_repo.update_by_id(sitemap_id, SitemapUpdate(fetch_status=SitemapFetchStatus.SUCCESS))
+            await self.sitemap_repo.update_by_id(sitemap_id, SitemapUpdate(fetch_status=SitemapFetchStatus.FAILED))
+            await self.sitemap_repo.update_last_fetched(sitemap_id)
             return {"leaf_sitemaps": [], "articles": []}
 
     async def _parse_sitemap_index(
@@ -217,19 +297,44 @@ class SitemapService:
         leaf_sitemaps = []
         all_articles = []
 
+        sitemap_candidates: list[dict[str, Any]] = []
         for tag in sitemap_tags:
             loc_tag = tag.find("loc")
             if not loc_tag:
                 continue
 
             sub_sitemap_url = loc_tag.text.strip()
+            lastmod_tag = tag.find("lastmod")
+            lastmod = self._parse_optional_datetime(lastmod_tag.text if lastmod_tag else None)
+            existing = await self.sitemap_repo.get_by_url(sub_sitemap_url)
+            sitemap_candidates.append(
+                {
+                    "url": sub_sitemap_url,
+                    "lastmod": lastmod,
+                    "existing": existing,
+                    "priority": self._calculate_sitemap_priority(
+                        lastmod=lastmod,
+                        fetch_status=existing.get("fetch_status") if existing else None,
+                        last_fetched=existing.get("last_fetched") if existing else None,
+                        article_count=int(existing.get("article_count", 0)) if existing else 0,
+                    ),
+                }
+            )
 
+        sitemap_candidates.sort(key=lambda item: item["priority"], reverse=True)
+
+        for candidate in sitemap_candidates:
+            sub_sitemap_url = candidate["url"]
             if recursive:
                 # 递归解析子 Sitemap
-                logger.info(f"Recursively parsing sub-sitemap: {sub_sitemap_url}")
+                logger.info(
+                    "Recursively parsing sub-sitemap: %s (priority=%.3f)",
+                    sub_sitemap_url,
+                    candidate["priority"],
+                )
 
                 # 检查是否已存在
-                existing = await self.sitemap_repo.get_by_url(sub_sitemap_url)
+                existing = candidate["existing"]
                 if existing:
                     sub_sitemap_id = existing["id"]
                 else:
@@ -330,6 +435,23 @@ class SitemapService:
                     publish_time=publish_time,
                 )
             )
+
+        articles.sort(
+            key=lambda article: (
+                article.publish_time is not None,
+                self._normalize_datetime(article.publish_time) or datetime.min.replace(tzinfo=timezone.utc),
+            ),
+            reverse=True,
+        )
+
+        if len(articles) > MAX_PENDING_ARTICLES_PER_SITEMAP:
+            logger.info(
+                "Sitemap %s 近期文章过多，按发布时间截断为 %s 篇（原始 %s 篇）",
+                sitemap_id,
+                MAX_PENDING_ARTICLES_PER_SITEMAP,
+                len(articles),
+            )
+            articles = articles[:MAX_PENDING_ARTICLES_PER_SITEMAP]
 
         logger.info(f"Parsed {len(articles)} articles from sitemap {sitemap_id} (filtered {filtered_count} older than 30 days)")
         return articles

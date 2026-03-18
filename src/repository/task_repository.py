@@ -140,6 +140,43 @@ class TaskRepository(BaseRepository):
         rows = await self.fetch_all(sql, params)
         return [self._parse_task_row(dict(row)) for row in rows]
 
+    async def get_pending_tasks(
+        self,
+        task_types: list[str] | None = None,
+        limit: int = 20,
+    ) -> list[dict[str, Any]]:
+        """获取待执行任务列表。"""
+        conditions = ["status = :status"]
+        params: dict[str, Any] = {"status": TaskStatus.PENDING.value, "limit": limit}
+
+        if task_types:
+            placeholders = []
+            for index, task_type in enumerate(task_types):
+                key = f"task_type_{index}"
+                placeholders.append(f":{key}")
+                params[key] = task_type
+            conditions.append(f"task_type IN ({', '.join(placeholders)})")
+
+        sql = f"""
+            SELECT * FROM {self.TABLE_NAME}
+            WHERE {' AND '.join(conditions)}
+            ORDER BY created_at ASC
+            LIMIT :limit
+        """
+        rows = await self.fetch_all(sql, params)
+        return [self._parse_task_row(dict(row)) for row in rows]
+
+    async def find_latest_by_title(self, title: str) -> dict[str, Any] | None:
+        """按标题查询最新任务。"""
+        sql = f"""
+            SELECT * FROM {self.TABLE_NAME}
+            WHERE title = :title
+            ORDER BY created_at DESC
+            LIMIT 1
+        """
+        row = await self.fetch_one(sql, {"title": title})
+        return self._parse_task_row(dict(row)) if row else None
+
     async def update_status(
         self,
         task_id: int,

@@ -180,11 +180,9 @@ async def stream_crawl_pending(
             # 发送任务创建事件
             yield f"event: created\ndata: {json_dumps_datetime({'task_id': task_id, 'task': dict(task)})}\n\n"
 
-            # 在后台执行任务 - 用新的 session 创建新的 manager
+            # 在后台执行任务，使用独立 session。
             print(f"[TASK API] 准备启动任务 {task_id}")
-            stream_manager = TaskManager(stream_db)
-            task_coroutine = stream_manager.execute_task(task_id)
-            background_task = asyncio.create_task(task_coroutine)
+            background_task = asyncio.create_task(TaskManager.execute_task_in_background(task_id))
             print(f"[TASK API] 任务 {task_id} 已提交到后台: {background_task}")
 
             # 流式返回进度
@@ -256,9 +254,8 @@ async def stream_retry_failed(
             # 发送任务创建事件
             yield f"event: created\ndata: {json_dumps_datetime({'task_id': task_id, 'task': dict(task)})}\n\n"
 
-            # 在后台执行任务 - 用新的 session 创建新的 manager
-            stream_manager = TaskManager(stream_db)
-            asyncio.create_task(stream_manager.execute_task(task_id))
+            # 在后台执行任务，使用独立 session。
+            asyncio.create_task(TaskManager.execute_task_in_background(task_id))
 
             # 流式返回进度
             check_count = 0
@@ -373,12 +370,9 @@ async def start_task(
             details={"task_id": task_id, "current_status": task.status.value},
         )
 
-    # 在后台执行任务
-    asyncio.create_task(manager.execute_task(task_id))
-
     return APIResponse(
         success=True,
-        data={"task_id": task_id, "status": "started"},
+        data={"task_id": task_id, "status": "queued"},
     )
 
 

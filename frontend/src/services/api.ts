@@ -401,18 +401,23 @@ export const reportsApi = {
             if (currentEvent && currentData) {
               try {
                 const parsedData = JSON.parse(currentData)
-                onEvent({ event: currentEvent as ReportSSEEvent["event"], ...parsedData })
+                const eventName = currentEvent as ReportSSEEvent["event"]
+                onEvent({ event: eventName, ...parsedData })
+
+                if (eventName === "complete") {
+                  onComplete?.()
+                  return
+                }
+
+                if (eventName === "error") {
+                  onError?.(parsedData.error || "报告生成失败")
+                  return
+                }
               } catch (e) {
                 console.error("Failed to parse SSE data:", currentData, e)
               }
               currentEvent = null
               currentData = null
-
-              // 检查是否完成
-              if (currentEvent === "complete") {
-                onComplete?.()
-                return
-              }
             }
           }
         }

@@ -20,10 +20,12 @@ from src.api.schemas import (
     NotFoundException,
     UnprocessableEntityException,
 )
-from src.core.config import settings
+from src.core.config import init_logging, settings
 
 
 logger = logging.getLogger(__name__)
+
+init_logging()
 
 
 # ============================================================================
@@ -41,10 +43,13 @@ async def lifespan(app: FastAPI) -> AsyncGenerator:
     await init_database()
     logger.info("数据库初始化完成")
 
-    # 启动调度器
-    from src.services.scheduler_service import start_scheduler
-    await start_scheduler()
-    logger.info("定时任务调度器已启动")
+    if settings.runtime.enable_scheduler:
+        from src.services.scheduler_service import start_scheduler
+
+        await start_scheduler()
+        logger.info("定时任务调度器已启动")
+    else:
+        logger.info("当前进程未启用定时任务调度器")
 
     yield
 
@@ -52,13 +57,18 @@ async def lifespan(app: FastAPI) -> AsyncGenerator:
 
     # 关闭时的清理逻辑
     # TODO: 关闭数据库连接
+    from src.core.database import close_engine
     # TODO: 关闭 AI 客户端
     # TODO: 关闭搜索引擎
 
     # 停止调度器
-    from src.services.scheduler_service import stop_scheduler
-    await stop_scheduler()
-    logger.info("定时任务调度器已停止")
+    if settings.runtime.enable_scheduler:
+        from src.services.scheduler_service import stop_scheduler
+
+        await stop_scheduler()
+        logger.info("定时任务调度器已停止")
+    await close_engine()
+    logger.info("数据库连接已关闭")
 
 
 # ============================================================================

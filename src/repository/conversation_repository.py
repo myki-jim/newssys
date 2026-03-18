@@ -148,6 +148,22 @@ class MessageRepository(BaseRepository):
         )
         return [self._orm_to_dict(orm) for orm in result.scalars().all()]
 
+    async def fetch_prompt_history(
+        self,
+        conversation_id: int,
+        limit: int = 10,
+    ) -> list[dict[str, str]]:
+        """获取供模型使用的最近对话历史。"""
+        messages = await self.fetch_by_conversation(conversation_id, limit=max(limit, 1))
+        prompt_messages: list[dict[str, str]] = []
+        for message in messages[-limit:]:
+            role = message.get("role")
+            content = (message.get("content") or "").strip()
+            if role not in {"user", "assistant"} or not content:
+                continue
+            prompt_messages.append({"role": role, "content": content})
+        return prompt_messages
+
     def _orm_to_dict(self, orm: MessageOrm) -> dict[str, Any]:
         """ORM对象转字典"""
         return {

@@ -14,9 +14,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.api.schemas import APIResponse
 from src.core.database import get_async_session
-from src.core.models import AgentState, ChatRequest, Conversation, ConversationCreate, ConversationUpdate
+from src.core.models import ChatRequest, Conversation, ConversationCreate, ConversationUpdate, MessageCreate, TaskStatus, TaskType
 from src.repository.conversation_repository import ConversationRepository, MessageRepository
-from src.services.ai_agent import AIAgentService
+from src.repository.task_repository import TaskRepository
+from src.services.task_manager import TaskManager
 
 
 logger = logging.getLogger(__name__)
@@ -131,90 +132,106 @@ async def chat_stream(
     - Agent模式：先搜索再生成响应
     """
 
+    conv_repo = ConversationRepository(db)
+    message_repo = MessageRepository(db)
+    manager = TaskManager(db)
+
+    if request.conversation_id is None:
+        conversation = await conv_repo.create(
+            ConversationCreate(
+                title=request.message[:50] + "..." if len(request.message) > 50 else request.message,
+                mode=request.mode,
+                web_search_enabled=request.web_search_enabled,
+                internal_search_enabled=request.internal_search_enabled,
+            )
+        )
+        conversation_id = conversation["id"]
+    else:
+        conversation_id = request.conversation_id
+        existing = await conv_repo.fetch_by_id(conversation_id)
+        if not existing:
+            async def missing_stream():
+                yield f"data: {json.dumps({'type': 'error', 'data': {'error': f'Conversation {conversation_id} not found'}}, ensure_ascii=False)}\n\n"
+
+            return StreamingResponse(
+                missing_stream(),
+                media_type="text/event-stream",
+            )
+
+        await conv_repo.update(
+            conversation_id,
+            ConversationUpdate(
+                mode=request.mode,
+                web_search_enabled=request.web_search_enabled,
+                internal_search_enabled=request.internal_search_enabled,
+            ),
+        )
+
+    await message_repo.create(
+        MessageCreate(
+            conversation_id=conversation_id,
+            role="user",
+            content=request.message,
+        )
+    )
+
+    task = await manager.create_task(
+        task_type=TaskType.AI_CHAT,
+        title=f"AI 对话 {conversation_id}",
+        params={
+            "conversation_id": conversation_id,
+            "message": request.message,
+            "mode": request.mode,
+            "web_search_enabled": request.web_search_enabled,
+            "internal_search_enabled": request.internal_search_enabled,
+        },
+    )
+
     async def event_stream():
-        agent_service = AIAgentService(db)
+        from src.core.database import get_async_session
 
-        # 用于收集状态更新的队列
-        state_queue = asyncio.Queue()
+        yield f"data: {json.dumps({'type': 'start', 'conversation_id': conversation_id, 'task_id': task.id}, ensure_ascii=False)}\n\n"
 
-        def on_state_update(state: AgentState):
-            """Agent状态更新回调 - 将状态放入队列"""
-            state_dict = {
-                "type": "state",
-                "data": {
-                    "stage": state.stage,
-                    "keywords": state.keywords or [],
-                    "internal_results": state.internal_results or [],
-                    "web_results": state.web_results or [],
-                    "progress": state.progress,
-                    "total": state.total,
-                    "message": state.message,
-                }
-            }
-            try:
-                state_queue.put_nowait(json.dumps(state_dict, ensure_ascii=False))
-            except:
-                pass
+        last_event_id = 0
+        while True:
+            async with get_async_session() as stream_db:
+                repo = TaskRepository(stream_db)
+                task_data = await repo.get_by_id(task.id)
+                if task_data is None:
+                    yield f"data: {json.dumps({'type': 'error', 'data': {'error': 'Task not found'}}, ensure_ascii=False)}\n\n"
+                    return
 
-        try:
-            # 发送开始事件
-            yield f"event: start\ndata: {json.dumps({'conversation_id': request.conversation_id})}\n\n"
+                events = await repo.get_events(task.id, limit=500)
+                new_events = [event for event in events if event["id"] > last_event_id]
 
-            # 使用异步任务运行chat
-            chat_queue = asyncio.Queue()
+                for event in new_events:
+                    last_event_id = event["id"]
+                    if event["event_type"] != "info":
+                        continue
 
-            async def run_chat():
-                """在后台运行chat，将结果放入队列"""
-                full_response = ""
-                async for chunk in agent_service.chat(
-                    conversation_id=request.conversation_id,
-                    message=request.message,
-                    mode=request.mode,
-                    web_search_enabled=request.web_search_enabled,
-                    internal_search_enabled=request.internal_search_enabled,
-                    on_state_update=on_state_update,
-                ):
-                    full_response += chunk
-                    await chat_queue.put(("chunk", chunk))
-                await chat_queue.put(("done", full_response))
+                    event_data = event.get("event_data") or {}
+                    stream_event = event_data.get("stream_event")
+                    if stream_event == "state":
+                        yield f"data: {json.dumps({'type': 'state', 'data': {'stage': event_data.get('stage'), 'keywords': event_data.get('keywords', []), 'internal_results': event_data.get('internal_results', []), 'web_results': event_data.get('web_results', []), 'progress': event_data.get('progress', 0), 'total': event_data.get('total', 100), 'message': event_data.get('message', '')}}, ensure_ascii=False)}\n\n"
+                    elif stream_event == "chunk":
+                        yield f"data: {json.dumps({'type': 'chunk', 'data': {'text': event_data.get('text', '')}}, ensure_ascii=False)}\n\n"
+                    elif stream_event == "end":
+                        yield f"data: {json.dumps({'type': 'end', 'data': {'full_response': event_data.get('full_response', '')}}, ensure_ascii=False)}\n\n"
+                        return
 
-            # 启动聊天任务
-            chat_task = asyncio.create_task(run_chat())
+                status = TaskStatus(task_data["status"])
+                if status == TaskStatus.FAILED:
+                    yield f"data: {json.dumps({'type': 'error', 'data': {'error': task_data.get('error_message') or 'AI 对话执行失败'}}, ensure_ascii=False)}\n\n"
+                    return
+                if status == TaskStatus.CANCELLED:
+                    yield f"data: {json.dumps({'type': 'error', 'data': {'error': 'AI 对话已取消'}}, ensure_ascii=False)}\n\n"
+                    return
+                if status == TaskStatus.COMPLETED:
+                    result = task_data.get("result") or {}
+                    yield f"data: {json.dumps({'type': 'end', 'data': {'full_response': result.get('full_response', '')}}, ensure_ascii=False)}\n\n"
+                    return
 
-            # 主循环：同时处理状态更新和聊天响应
-            while True:
-                # 检查是否有状态更新
-                try:
-                    state_data = state_queue.get_nowait()
-                    yield f"data: {state_data}\n\n"
-                except asyncio.QueueEmpty:
-                    pass
-
-                # 检查是否有聊天响应
-                try:
-                    msg_type, data = chat_queue.get_nowait()
-                    if msg_type == "chunk":
-                        yield f"event: chunk\ndata: {json.dumps({'text': data}, ensure_ascii=False)}\n\n"
-                    elif msg_type == "done":
-                        # 发送完成事件
-                        yield f"event: end\ndata: {json.dumps({'full_response': data})}\n\n"
-                        break
-                except asyncio.QueueEmpty:
-                    pass
-
-                # 如果聊天任务完成且队列为空，退出循环
-                if chat_task.done() and chat_queue.empty():
-                    break
-
-                # 短暂休眠避免CPU占用过高
-                await asyncio.sleep(0.01)
-
-            # 等待聊天任务完成
-            await chat_task
-
-        except Exception as e:
-            logger.error(f"Chat error: {e}", exc_info=True)
-            yield f"event: error\ndata: {json.dumps({'error': str(e)}, ensure_ascii=False)}\n\n"
+            await asyncio.sleep(0.5)
 
     return StreamingResponse(
         event_stream(),

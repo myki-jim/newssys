@@ -417,6 +417,9 @@ class TaskType(str, Enum):
     SEARCH_IMPORT = "search_import"  # 搜索导入
     SITEMAP_SYNC = "sitemap_sync"  # Sitemap 同步
     AUTO_SEARCH = "auto_search"  # 自动搜索
+    CLEANUP_LOW_QUALITY = "cleanup_low_quality"  # 清理低质量内容
+    GENERATE_REPORT = "generate_report"  # 生成报告
+    AI_CHAT = "ai_chat"  # AI 对话
 
 
 class TaskEventType(str, Enum):

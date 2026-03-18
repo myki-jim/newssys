@@ -4,10 +4,62 @@ SimHash 文本相似度计算
 """
 
 import hashlib
-import math
 import re
 from collections import defaultdict
 from typing import Any
+
+import jieba
+
+
+def normalize_text(text: str) -> str:
+    """
+    归一化文本，尽量去除新闻模板噪声。
+    """
+    if not text:
+        return ""
+
+    normalized = text.replace("\r", "\n")
+    normalized = re.sub(r"https?://\S+", " ", normalized)
+    normalized = re.sub(r"\[[^\]]+\]\([^)]+\)", " ", normalized)
+    normalized = re.sub(r"<[^>]+>", " ", normalized)
+    normalized = re.sub(r"(?im)^(责任编辑|责编|编辑|来源|原标题|标签)[:：].*$", " ", normalized)
+    normalized = re.sub(r"(?im)^(上一篇|下一篇|相关阅读|延伸阅读).*$", " ", normalized)
+    normalized = re.sub(r"(?im)^(版权所有|版权声明|免责声明).*$", " ", normalized)
+    normalized = re.sub(r"[ \t]+", " ", normalized)
+    normalized = re.sub(r"\n{3,}", "\n\n", normalized)
+    return normalized.strip()
+
+
+def tokenize_mixed_text(text: str, token_type: str = "word") -> list[str]:
+    """
+    面向中英文混合新闻文本的分词。
+    - 中文优先用 jieba，再补 2-gram
+    - 英文/数字保留词粒度
+    """
+    if not text:
+        return []
+
+    normalized = normalize_text(text).lower()
+    chunks = re.findall(r"[\u4e00-\u9fff]+|[a-z0-9]+", normalized)
+    tokens: list[str] = []
+
+    for chunk in chunks:
+        if re.fullmatch(r"[\u4e00-\u9fff]+", chunk):
+            if token_type == "char":
+                tokens.extend(list(chunk))
+                continue
+
+            words = [word.strip() for word in jieba.lcut(chunk) if word.strip()]
+            meaningful_words = [word for word in words if len(word) >= 2]
+            tokens.extend(meaningful_words)
+
+            if len(chunk) >= 2:
+                tokens.extend(chunk[i : i + 2] for i in range(len(chunk) - 1))
+        else:
+            if len(chunk) >= 2:
+                tokens.append(chunk)
+
+    return tokens
 
 
 class SimHash:
@@ -42,30 +94,7 @@ class SimHash:
         Returns:
             词汇列表
         """
-        if not text:
-            return []
-
-        # 转小写
-        text = text.lower()
-
-        # 移除标点和特殊字符
-        text = re.sub(r'[^\w\s\u4e00-\u9fff]', ' ', text)
-
-        if self.token_type == 'word':
-            # 按词分词（空格分隔，中文按字符）
-            words = []
-            for part in text.split():
-                if '\u4e00' <= part <= '\u9fff':
-                    # 中文，按字符分割
-                    words.extend(list(part))
-                else:
-                    # 英文等，按空格分割
-                    words.extend(part.split())
-            return words
-
-        else:  # char
-            # 按字符分词
-            return list(text.replace(' ', ''))
+        return tokenize_mixed_text(text, token_type=self.token_type)
 
     def compute_hash(self, text: str) -> int:
         """
@@ -402,13 +431,8 @@ def text_similarity_simple(text1: str, text2: str) -> float:
     Returns:
         相似度（0-1）
     """
-    # 标准化
-    text1 = re.sub(r'[^\w\s\u4e00-\u9fff]', ' ', text1.lower())
-    text2 = re.sub(r'[^\w\s\u4e00-\u9fff]', ' ', text2.lower())
-
-    # 分词
-    words1 = set(text1.split())
-    words2 = set(text2.split())
+    words1 = set(tokenize_mixed_text(text1))
+    words2 = set(tokenize_mixed_text(text2))
 
     if not words1 or not words2:
         return 0.0

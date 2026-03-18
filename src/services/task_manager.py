@@ -4,6 +4,8 @@ Task Manager 服务
 """
 
 import asyncio
+import logging
+import time
 from collections.abc import Callable
 from datetime import datetime
 from typing import Any
@@ -18,6 +20,9 @@ from src.core.models import (
     TaskType,
 )
 from src.repository.task_repository import TaskRepository
+
+
+logger = logging.getLogger(__name__)
 
 
 # ============================================================================
@@ -174,10 +179,19 @@ class TaskManager:
         await self.repo.add_event(task_id, TaskEventType.CREATED, {"title": title})
 
         if auto_start:
-            # 在后台启动任务
-            asyncio.create_task(self._execute_task(task_id))
+            # 后台执行必须使用独立 session，避免复用请求作用域会话。
+            asyncio.create_task(self.execute_task_in_background(task_id))
 
         return Task(**task_dict)
+
+    @staticmethod
+    async def execute_task_in_background(task_id: int) -> dict[str, Any]:
+        """使用独立数据库会话执行任务。"""
+        from src.core.database import get_async_session
+
+        async with get_async_session() as db:
+            manager = TaskManager(db)
+            return await manager.execute_task(task_id)
 
     async def get_task(self, task_id: int) -> Task | None:
         """
@@ -255,13 +269,13 @@ class TaskManager:
         Returns:
             任务结果
         """
-        print(f"[TaskManager] 开始执行任务 {task_id}")
+        logger.info("开始执行任务 %s", task_id)
         try:
             result = await self._execute_task(task_id)
-            print(f"[TaskManager] 任务 {task_id} 执行完成")
+            logger.info("任务 %s 执行完成", task_id)
             return result
         except Exception as e:
-            print(f"[TaskManager] 任务 {task_id} 执行失败: {e}")
+            logger.error("任务 %s 执行失败: %s", task_id, e)
             raise
 
     async def _execute_task(self, task_id: int) -> dict[str, Any]:
@@ -274,14 +288,14 @@ class TaskManager:
         Returns:
             任务结果
         """
-        print(f"[TaskManager._execute_task] 开始执行任务 {task_id}")
+        logger.info("内部执行任务 %s", task_id)
 
         task = await self.get_task(task_id)
         if not task:
-            print(f"[TaskManager._execute_task] 任务 {task_id} 不存在！")
+            logger.error("任务 %s 不存在", task_id)
             raise ValueError(f"Task {task_id} not found")
 
-        print(f"[TaskManager._execute_task] 任务 {task_id} 类型={task.task_type}, 状态={task.status}")
+        logger.info("任务 %s 类型=%s, 状态=%s", task_id, task.task_type, task.status)
 
         # 检查取消标志
         if self._cancel_flags.get(task_id, False):
@@ -359,27 +373,51 @@ class TaskManager:
         Returns:
             进度回调函数
         """
+        last_dispatch_at = 0.0
+        last_signature: tuple[int, int, str | None] | None = None
+
         async def update(current: int, total: int, message: str | None = None, intermediate_result: dict[str, Any] | None = None):
             # 创建新的 session 避免并发冲突
             from src.core.database import get_async_session
 
-            async with get_async_session() as db:
-                repo = TaskRepository(db)
-                await repo.update_progress(task_id, current, total, message, intermediate_result)
-                event_data: dict[str, Any] = {"current": current, "total": total, "message": message}
-                if intermediate_result:
-                    event_data["result"] = intermediate_result
-                await repo.add_event(
-                    task_id,
-                    TaskEventType.PROGRESS,
-                    event_data,
-                )
+            try:
+                async with get_async_session() as db:
+                    repo = TaskRepository(db)
+                    await repo.update_progress(task_id, current, total, message, intermediate_result)
+                    event_data: dict[str, Any] = {"current": current, "total": total, "message": message}
+                    if intermediate_result:
+                        event_data["result"] = intermediate_result
+                    await repo.add_event(
+                        task_id,
+                        TaskEventType.PROGRESS,
+                        event_data,
+                    )
+            except Exception as exc:
+                logger.warning("任务 %s 进度写入失败: %s", task_id, exc)
+
+        def _consume_task_result(task: asyncio.Task) -> None:
+            try:
+                task.result()
+            except Exception as exc:
+                logger.warning("任务 %s 的异步进度回调失败: %s", task_id, exc)
 
         def sync_wrapper(current: int, total: int, message: str | None = None, intermediate_result: dict[str, Any] | None = None):
+            nonlocal last_dispatch_at, last_signature
+            signature = (current, total, message)
+            now = time.monotonic()
+            is_final = total > 0 and current >= total
+            if signature == last_signature and not is_final:
+                return
+            if not is_final and now - last_dispatch_at < 2.0:
+                return
+            last_signature = signature
+            last_dispatch_at = now
+
             # 在新的事件循环中运行异步函数
             try:
                 loop = asyncio.get_running_loop()
-                loop.create_task(update(current, total, message, intermediate_result))
+                task = loop.create_task(update(current, total, message, intermediate_result))
+                task.add_done_callback(_consume_task_result)
             except RuntimeError:
                 # 没有运行中的事件循环，创建新的
                 asyncio.run(update(current, total, message, intermediate_result))
@@ -400,16 +438,26 @@ class TaskManager:
             # 创建新的 session 避免并发冲突
             from src.core.database import get_async_session
 
-            async with get_async_session() as db:
-                repo = TaskRepository(db)
-                await repo.add_event(task_id, event_type, data)
+            try:
+                async with get_async_session() as db:
+                    repo = TaskRepository(db)
+                    await repo.add_event(task_id, event_type, data)
+            except Exception as exc:
+                logger.warning("任务 %s 事件写入失败 (%s): %s", task_id, event_type, exc)
+
+        def _consume_event_task_result(task: asyncio.Task) -> None:
+            try:
+                task.result()
+            except Exception as exc:
+                logger.warning("任务 %s 的异步事件回调失败: %s", task_id, exc)
 
         def sync_wrapper(
             event_type: TaskEventType, data: dict[str, Any] | None = None
         ):
             try:
                 loop = asyncio.get_running_loop()
-                loop.create_task(add(event_type, data))
+                task = loop.create_task(add(event_type, data))
+                task.add_done_callback(_consume_event_task_result)
             except RuntimeError:
                 asyncio.run(add(event_type, data))
 

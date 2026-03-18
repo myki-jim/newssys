@@ -91,6 +91,12 @@ export interface ReportGenerationState {
   stage: string
   progress: number
   message: string
+  clusterProgress: {
+    current: number
+    total: number
+    comparisons: number
+    cluster_count: number
+  } | null
   totalArticles: number
   clusteredArticles: number
   eventCount: number
@@ -128,6 +134,7 @@ export function useReportGenerate() {
       stage: "initializing",
       progress: 0,
       message: "正在启动报告生成...",
+      clusterProgress: null,
       totalArticles: 0,
       clusteredArticles: 0,
       eventCount: 0,
@@ -159,6 +166,7 @@ export function useReportGenerate() {
               stage: event.stage,
               progress: event.progress,
               message: event.message,
+              clusterProgress: event.data?.cluster_progress ?? prev.clusterProgress,
               totalArticles: event.data?.total_articles ?? prev.totalArticles,
               clusteredArticles: event.data?.clustered_articles ?? prev.clusteredArticles,
               eventCount: event.data?.event_count ?? prev.eventCount,
@@ -189,6 +197,7 @@ export function useReportGenerate() {
               stage: "completed",
               progress: 100,
               message: "报告生成完成",
+              clusterProgress: null,
               sections: event.sections,
               content: event.content,
               totalArticles: event.statistics.total_articles,
@@ -207,6 +216,7 @@ export function useReportGenerate() {
               status: "error",
               error: event.error,
               message: `错误: ${event.error}`,
+              clusterProgress: null,
               currentStreamingSection: null,
             }))
             break
@@ -235,12 +245,14 @@ export function useReportGenerate() {
       stage: "",
       progress: 0,
       message: "",
+      clusterProgress: null,
       totalArticles: 0,
       clusteredArticles: 0,
       eventCount: 0,
       keywords: [],
       events: [],
       sections: [],
+      currentStreamingSection: null,
       content: "",
       error: null,
     })
@@ -391,7 +403,17 @@ export function useTimeRangePresets() {
     setError(null)
     try {
       const result = await reportsApi.getTimeRangePresets()
-      setData(result)
+      const normalized = Object.fromEntries(
+        Object.entries(result).map(([name, value]) => [
+          name,
+          {
+            name,
+            start: value.start,
+            end: value.end,
+          },
+        ])
+      )
+      setData(normalized)
     } catch (err) {
       setError(err instanceof Error ? err.message : "获取时间预设失败")
     } finally {

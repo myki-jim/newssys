@@ -32,6 +32,28 @@ interface ReportViewDrawerProps {
   reportId: number
 }
 
+function formatReportArticleStats(report: Report) {
+  if (report.status === "generating") {
+    const total = report.total_articles > 0 ? `${report.total_articles} 篇` : "统计中"
+    const deduplicated = report.clustered_articles > 0 ? `${report.clustered_articles} 篇` : "处理中"
+    return `${total} → ${deduplicated}`
+  }
+
+  if (report.clustered_articles > 0) {
+    return `${report.total_articles} 篇 → ${report.clustered_articles} 篇`
+  }
+
+  return `${report.total_articles} 篇`
+}
+
+function formatReportEventStats(report: Report) {
+  if (report.status === "generating" && report.event_count <= 0) {
+    return "处理中"
+  }
+
+  return `${report.event_count} 个事件`
+}
+
 export function ReportViewDrawer({ open, onOpenChange, reportId }: ReportViewDrawerProps) {
   // 获取报告详情
   const { data: report, isLoading } = useQuery({
@@ -99,16 +121,11 @@ export function ReportViewDrawer({ open, onOpenChange, reportId }: ReportViewDra
                       </div>
                       <div className="flex items-center gap-1">
                         <Hash className="h-3.5 w-3.5" />
-                        {report.total_articles} 篇文章
-                        {report.clustered_articles > 0 && (
-                          <span className="text-muted-foreground">
-                            → {report.clustered_articles} 篇
-                          </span>
-                        )}
+                        {formatReportArticleStats(report)}
                       </div>
                       <div className="flex items-center gap-1">
                         <Layers className="h-3.5 w-3.5" />
-                        {report.event_count} 个事件
+                        {formatReportEventStats(report)}
                       </div>
                       {getStatusBadge(report.status)}
                       {report.language && (
