@@ -55,6 +55,16 @@ class DatabaseSettings(BaseSettings):
     )
 
     @property
+    def is_mysql(self) -> bool:
+        """是否为 MySQL 数据库"""
+        return self.type == "mysql"
+
+    @property
+    def is_sqlite(self) -> bool:
+        """是否为 SQLite 数据库"""
+        return self.type == "sqlite"
+
+    @property
     def url(self) -> str:
         """生成数据库连接 URL，支持 MySQL 和 SQLite"""
         if self.database_url:
@@ -174,6 +184,16 @@ class RuntimeSettings(BaseSettings):
         default=False,
         validation_alias=AliasChoices("ENABLE_SCHEDULER", "enable_scheduler"),
     )
+    heartbeat_type: str = Field(
+        default="auto",
+        validation_alias=AliasChoices("HEARTBEAT_TYPE", "heartbeat_type"),
+        description="心跳类型: auto (按DB类型选择), file (文件), database (数据库)",
+    )
+    worker_id: str = Field(
+        default="",
+        validation_alias=AliasChoices("WORKER_ID", "worker_id"),
+        description="Worker 实例唯一标识，为空时自动生成",
+    )
     scheduler_heartbeat_file: str = Field(
         default="/tmp/newssys-scheduler-heartbeat",
         validation_alias=AliasChoices("SCHEDULER_HEARTBEAT_FILE", "scheduler_heartbeat_file"),
@@ -234,6 +254,17 @@ class RuntimeSettings(BaseSettings):
         validation_alias=AliasChoices(
             "AI_HEARTBEAT_STALE_SECONDS",
             "ai_heartbeat_stale_seconds",
+        ),
+    )
+    sitemap_heartbeat_file: str = Field(
+        default="/tmp/newssys-sitemap-heartbeat",
+        validation_alias=AliasChoices("SITEMAP_HEARTBEAT_FILE", "sitemap_heartbeat_file"),
+    )
+    sitemap_heartbeat_stale_seconds: int = Field(
+        default=90,
+        validation_alias=AliasChoices(
+            "SITEMAP_HEARTBEAT_STALE_SECONDS",
+            "sitemap_heartbeat_stale_seconds",
         ),
     )
 

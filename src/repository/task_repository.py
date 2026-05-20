@@ -80,7 +80,7 @@ class TaskRepository(BaseRepository):
         offset: int = 0,
     ) -> list[dict[str, Any]]:
         """
-        获取任务列表
+        获取任务列表（排除 schedule_* 内部追踪任务）
 
         Args:
             status: 任务状态过滤
@@ -91,7 +91,7 @@ class TaskRepository(BaseRepository):
         Returns:
             任务列表
         """
-        conditions = []
+        conditions = ["task_type NOT LIKE 'schedule_%'"]
         params: dict[str, Any] = {"limit": limit, "offset": offset}
 
         if status:
@@ -102,7 +102,7 @@ class TaskRepository(BaseRepository):
             conditions.append("task_type = :task_type")
             params["task_type"] = task_type
 
-        where_clause = f"WHERE {' AND '.join(conditions)}" if conditions else ""
+        where_clause = f"WHERE {' AND '.join(conditions)}"
 
         sql = f"""
             SELECT * FROM {self.TABLE_NAME}
@@ -145,7 +145,7 @@ class TaskRepository(BaseRepository):
         task_types: list[str] | None = None,
         limit: int = 20,
     ) -> list[dict[str, Any]]:
-        """获取待执行任务列表。"""
+        """获取待执行任务列表（仅用于查看，不可用于任务抢占）。"""
         conditions = ["status = :status"]
         params: dict[str, Any] = {"status": TaskStatus.PENDING.value, "limit": limit}
 
@@ -165,6 +165,87 @@ class TaskRepository(BaseRepository):
         """
         rows = await self.fetch_all(sql, params)
         return [self._parse_task_row(dict(row)) for row in rows]
+
+    async def claim_next_task(
+        self,
+        worker_id: str,
+        task_types: list[str] | None = None,
+    ) -> dict[str, Any] | None:
+        """原子化抢占一个待执行任务（防止多 Worker 竞态）。
+
+        对于 MySQL 使用 SELECT ... FOR UPDATE SKIP LOCKED，
+        对于 SQLite 在同一事务中 SELECT + UPDATE。
+        """
+        from src.core.config import settings
+
+        conditions = ["status = :status"]
+        params: dict[str, Any] = {"status": TaskStatus.PENDING.value}
+
+        if task_types:
+            placeholders = []
+            for index, task_type in enumerate(task_types):
+                key = f"task_type_{index}"
+                placeholders.append(f":{key}")
+                params[key] = task_type
+            conditions.append(f"task_type IN ({', '.join(placeholders)})")
+
+        if settings.database.is_mysql:
+            # MySQL: 使用行级锁 + SKIP LOCKED 避免竞态
+            select_sql = f"""
+                SELECT id FROM {self.TABLE_NAME}
+                WHERE {' AND '.join(conditions)}
+                ORDER BY created_at ASC
+                LIMIT 1
+                FOR UPDATE SKIP LOCKED
+            """
+            row = await self.fetch_one(select_sql, params)
+            if not row:
+                return None
+            task_id = row["id"]
+            now = datetime.now()
+            await self.execute_write(
+                f"""UPDATE {self.TABLE_NAME}
+                   SET status = :status, started_at = :started_at,
+                       worker_id = :worker_id, updated_at = :now
+                   WHERE id = :id AND status = :pending_status""",
+                {
+                    "status": TaskStatus.RUNNING.value,
+                    "started_at": now,
+                    "worker_id": worker_id,
+                    "now": now,
+                    "id": task_id,
+                    "pending_status": TaskStatus.PENDING.value,
+                },
+            )
+            return await self.get_by_id(task_id)
+
+        else:
+            # SQLite: SELECT 后立即 UPDATE 在同一事务中
+            select_sql = f"""
+                SELECT * FROM {self.TABLE_NAME}
+                WHERE {' AND '.join(conditions)}
+                ORDER BY created_at ASC
+                LIMIT 1
+            """
+            row = await self.fetch_one(select_sql, params)
+            if not row:
+                return None
+            task_id = row["id"]
+            now = datetime.now()
+            await self.execute_write(
+                f"""UPDATE {self.TABLE_NAME}
+                   SET status = :status, started_at = :started_at,
+                       worker_id = :worker_id, updated_at = :now
+                   WHERE id = :id""",
+                {
+                    "status": TaskStatus.RUNNING.value,
+                    "started_at": now,
+                    "worker_id": worker_id,
+                    "now": now,
+                    "id": task_id,
+                },
+            )
+            return await self.get_by_id(task_id)
 
     async def find_latest_by_title(self, title: str) -> dict[str, Any] | None:
         """按标题查询最新任务。"""
@@ -386,7 +467,7 @@ class TaskRepository(BaseRepository):
         return {
             "id": row["id"],
             "task_type": row["task_type"],
-            "status": row["status"],
+            "status": row["status"].lower() if row.get("status") else None,
             "title": row["title"],
             "params": json.loads(row["params"]) if row.get("params") else {},
             "result": result,

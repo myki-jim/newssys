@@ -315,9 +315,10 @@ class TaskManager:
             )
             raise ValueError(error_msg)
 
-        # 更新状态为运行中
-        await self.repo.update_status(task_id, TaskStatus.RUNNING)
-        await self.repo.add_event(task_id, TaskEventType.STARTED)
+        # 更新状态为运行中（如果已被 Worker 抢占则跳过，保持幂等）
+        if task.status != TaskStatus.RUNNING:
+            await self.repo.update_status(task_id, TaskStatus.RUNNING)
+            await self.repo.add_event(task_id, TaskEventType.STARTED)
 
         result: dict[str, Any] = {}
 

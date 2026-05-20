@@ -22,6 +22,7 @@ async def main() -> None:
         heartbeat_file=settings.runtime.ai_heartbeat_file,
         heartbeat_interval_seconds=settings.runtime.scheduler_heartbeat_interval_seconds,
         workers=[("ai-task-worker", task_worker.run_forever)],
+        worker_type="ai",
     )
 
 

@@ -10,6 +10,7 @@ from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from src.core.config import settings
 from src.core.models import (
     Report,
     ReportAgentStage,
@@ -167,26 +168,38 @@ class ReportRepository(BaseRepository):
         placeholders = {f"_{k}": v for k, v in update_data.items()}
         placeholders["_id"] = report_id
 
-        sql = f"""
-            UPDATE {self.TABLE_NAME}
-            SET {', '.join(set_clauses)}
-            WHERE id = :_id
-            RETURNING *
-        """
-
-        result = await self.fetch_one(sql, placeholders)
-        await self.session.commit()
-
-        if result:
-            result_dict = dict(result)
-            if "sections" in result_dict and result_dict["sections"]:
+        if settings.database.is_mysql:
+            sql = f"""
+                UPDATE {self.TABLE_NAME}
+                SET {', '.join(set_clauses)}
+                WHERE id = :_id
+            """
+            await self.execute_write(sql, placeholders)
+            result = await self.fetch_by_id(report_id)
+            if result and "sections" in result and result["sections"]:
                 try:
-                    result_dict["sections"] = json.loads(result_dict["sections"])
+                    result["sections"] = json.loads(result["sections"])
                 except:
-                    result_dict["sections"] = []
-            return result_dict
-
-        return None
+                    result["sections"] = []
+            return result
+        else:
+            sql = f"""
+                UPDATE {self.TABLE_NAME}
+                SET {', '.join(set_clauses)}
+                WHERE id = :_id
+                RETURNING *
+            """
+            result = await self.fetch_one(sql, placeholders)
+            await self.session.commit()
+            if result:
+                result_dict = dict(result)
+                if "sections" in result_dict and result_dict["sections"]:
+                    try:
+                        result_dict["sections"] = json.loads(result_dict["sections"])
+                    except:
+                        result_dict["sections"] = []
+                return result_dict
+            return None
 
     async def delete(self, report_id: int) -> bool:
         """删除报告"""
@@ -305,26 +318,38 @@ class ReportTemplateRepository(BaseRepository):
         placeholders = {f"_{k}": v for k, v in update_data.items()}
         placeholders["_id"] = template_id
 
-        sql = f"""
-            UPDATE {self.TABLE_NAME}
-            SET {', '.join(set_clauses)}
-            WHERE id = :_id
-            RETURNING *
-        """
-
-        result = await self.fetch_one(sql, placeholders)
-        await self.session.commit()
-
-        if result:
-            result_dict = dict(result)
-            if "section_template" in result_dict and result_dict["section_template"]:
+        if settings.database.is_mysql:
+            sql = f"""
+                UPDATE {self.TABLE_NAME}
+                SET {', '.join(set_clauses)}
+                WHERE id = :_id
+            """
+            await self.execute_write(sql, placeholders)
+            result = await self.fetch_by_id(template_id)
+            if result and "section_template" in result and result["section_template"]:
                 try:
-                    result_dict["section_template"] = json.loads(result_dict["section_template"])
+                    result["section_template"] = json.loads(result["section_template"])
                 except:
-                    result_dict["section_template"] = []
-            return result_dict
-
-        return None
+                    result["section_template"] = []
+            return result
+        else:
+            sql = f"""
+                UPDATE {self.TABLE_NAME}
+                SET {', '.join(set_clauses)}
+                WHERE id = :_id
+                RETURNING *
+            """
+            result = await self.fetch_one(sql, placeholders)
+            await self.session.commit()
+            if result:
+                result_dict = dict(result)
+                if "section_template" in result_dict and result_dict["section_template"]:
+                    try:
+                        result_dict["section_template"] = json.loads(result_dict["section_template"])
+                    except:
+                        result_dict["section_template"] = []
+                return result_dict
+            return None
 
     async def delete(self, template_id: int) -> bool:
         """删除模板"""

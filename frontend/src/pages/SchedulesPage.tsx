@@ -371,6 +371,7 @@ export default function SchedulesPage() {
       sitemap_crawl: "Sitemap爬取",
       article_crawl: "文章自动爬取",
       keyword_search: "关键词搜索",
+      cleanup_low_quality: "清理低质量",
     }
     return labels[type] || type
   }

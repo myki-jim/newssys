@@ -58,6 +58,7 @@ class DatabaseManager:
             "echo": db_config.echo,
             "pool_pre_ping": True,
             "pool_recycle": db_config.pool_recycle,
+            "connect_args": {"charset": "utf8mb4"},
         }
 
         # 在测试环境使用 NullPool

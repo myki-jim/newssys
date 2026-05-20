@@ -22,6 +22,7 @@ async def main() -> None:
         heartbeat_file=settings.runtime.report_heartbeat_file,
         heartbeat_interval_seconds=settings.runtime.scheduler_heartbeat_interval_seconds,
         workers=[("report-task-worker", task_worker.run_forever)],
+        worker_type="report",
     )
 
 

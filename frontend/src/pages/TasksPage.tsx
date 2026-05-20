@@ -3,14 +3,32 @@ import { tasksApi } from "@/services/api"
 import type { Task, TaskStats, TaskEventType } from "@/types"
 import { CheckCircle, XCircle, Clock, AlertCircle, Loader2 } from "lucide-react"
 
-type TaskStatusType = "pending" | "running" | "completed" | "failed" | "cancelled"
-
-const statusConfig: Record<TaskStatusType, { label: string; icon: React.ElementType; color: string }> = {
+const statusConfig: Record<string, { label: string; icon: React.ElementType; color: string }> = {
   pending: { label: "待执行", icon: Clock, color: "text-gray-500" },
   running: { label: "运行中", icon: Loader2, color: "text-blue-500 animate-spin" },
   completed: { label: "已完成", icon: CheckCircle, color: "text-green-500" },
   failed: { label: "失败", icon: XCircle, color: "text-red-500" },
   cancelled: { label: "已取消", icon: AlertCircle, color: "text-orange-500" },
+}
+
+const taskTypeLabels: Record<string, string> = {
+  crawl_pending: "文章爬取",
+  retry_failed: "失败重试",
+  crawl_source: "单源爬取",
+  search_import: "搜索导入",
+  sitemap_sync: "Sitemap同步",
+  auto_search: "自动搜索",
+  cleanup_low_quality: "清理低质量",
+  generate_report: "生成报告",
+  ai_chat: "AI对话",
+}
+
+function getTaskTypeLabel(taskType: string) {
+  return taskTypeLabels[taskType] || taskType
+}
+
+function getStatusConfig(status: string) {
+  return statusConfig[status.toLowerCase()] || { label: status, icon: AlertCircle, color: "text-gray-500" }
 }
 
 export function TasksPage() {
@@ -159,7 +177,7 @@ export function TasksPage() {
               </div>
             ) : (
               tasks.map((task) => {
-                const config = statusConfig[task.status as TaskStatusType]
+                const config = getStatusConfig(task.status)
                 const Icon = config.icon
 
                 return (
@@ -174,13 +192,13 @@ export function TasksPage() {
                       <Icon className={`w-5 h-5 mt-0.5 ${config.color}`} />
                       <div className="flex-1 min-w-0">
                         <div className="flex items-center gap-2">
-                          <span className="font-medium truncate">{task.title || task.task_type}</span>
+                          <span className="font-medium truncate">{task.title || getTaskTypeLabel(task.task_type)}</span>
                           <span className={`text-xs px-2 py-0.5 rounded ${config.color} bg-opacity-10`}>
                             {config.label}
                           </span>
                         </div>
                         <div className="mt-1 text-sm text-muted-foreground">
-                          {task.task_type} · 创建于 {formatTime(task.created_at)}
+                          {getTaskTypeLabel(task.task_type)} · 创建于 {formatTime(task.created_at)}
                         </div>
                         {task.status === "running" && task.progress_total > 0 && (
                           <div className="mt-2">
@@ -229,11 +247,11 @@ export function TasksPage() {
                   </div>
                   <div>
                     <span className="text-muted-foreground">类型:</span>
-                    <span className="ml-2">{selectedTask.task_type}</span>
+                    <span className="ml-2">{getTaskTypeLabel(selectedTask.task_type)}</span>
                   </div>
                   <div>
                     <span className="text-muted-foreground">状态:</span>
-                    <span className="ml-2">{statusConfig[selectedTask.status as TaskStatusType]?.label}</span>
+                    <span className="ml-2">{getStatusConfig(selectedTask.status).label}</span>
                   </div>
                   <div>
                     <span className="text-muted-foreground">创建时间:</span>

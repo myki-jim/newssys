@@ -8,6 +8,8 @@
 import collections
 import logging
 from datetime import datetime, timedelta
+
+from src.core.config import settings
 from typing import Any
 
 import jieba.analyse
@@ -332,15 +334,26 @@ async def get_stats_trends(
     article_repo = ArticleRepository(db)
 
     # 今天每小时的文章数量趋势（过滤掉低质量文章）
-    hourly_trends_sql = """
-        SELECT
-            strftime('%H', created_at) as hour,
-            COUNT(*) as count
-        FROM articles
-        WHERE DATE(created_at) = DATE('now') AND status != 'low_quality'
-        GROUP BY hour
-        ORDER BY hour ASC
-    """
+    if settings.database.is_mysql:
+        hourly_trends_sql = """
+            SELECT
+                HOUR(created_at) as hour,
+                COUNT(*) as count
+            FROM articles
+            WHERE DATE(created_at) = CURDATE() AND status != 'low_quality'
+            GROUP BY hour
+            ORDER BY hour ASC
+        """
+    else:
+        hourly_trends_sql = """
+            SELECT
+                strftime('%H', created_at) as hour,
+                COUNT(*) as count
+            FROM articles
+            WHERE DATE(created_at) = DATE('now') AND status != 'low_quality'
+            GROUP BY hour
+            ORDER BY hour ASC
+        """
     hourly_result = await article_repo.fetch_all(hourly_trends_sql, {})
 
     hourly_trends = [
@@ -364,19 +377,34 @@ async def get_stats_trends(
     ]
 
     # 出现频次最高的标题（可能是热点新闻，过滤掉低质量文章）
-    top_titles_sql = """
-        SELECT
-            title,
-            COUNT(*) as count
-        FROM articles
-        WHERE title IS NOT NULL AND title != ''
-            AND created_at >= DATE('now', '-7 days')
-            AND status != 'low_quality'
-        GROUP BY title
-        HAVING count > 1
-        ORDER BY count DESC
-        LIMIT 10
-    """
+    if settings.database.is_mysql:
+        top_titles_sql = """
+            SELECT
+                title,
+                COUNT(*) as count
+            FROM articles
+            WHERE title IS NOT NULL AND title != ''
+                AND created_at >= DATE_SUB(CURDATE(), INTERVAL 7 DAY)
+                AND status != 'low_quality'
+            GROUP BY title
+            HAVING count > 1
+            ORDER BY count DESC
+            LIMIT 10
+        """
+    else:
+        top_titles_sql = """
+            SELECT
+                title,
+                COUNT(*) as count
+            FROM articles
+            WHERE title IS NOT NULL AND title != ''
+                AND created_at >= DATE('now', '-7 days')
+                AND status != 'low_quality'
+            GROUP BY title
+            HAVING count > 1
+            ORDER BY count DESC
+            LIMIT 10
+        """
     top_titles_result = await article_repo.fetch_all(top_titles_sql, {})
 
     top_titles = [

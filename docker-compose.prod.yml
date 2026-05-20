@@ -1,0 +1,399 @@
+version: "3.8"
+
+services:
+  # ============================================================================
+  # MySQL 数据库
+  # ============================================================================
+  mysql:
+    image: mysql:8.0
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-newssys123}
+      MYSQL_DATABASE: newssys
+      MYSQL_CHARSET: utf8mb4
+      MYSQL_COLLATION: utf8mb4_unicode_ci
+    volumes:
+      - mysql-data:/var/lib/mysql
+      - ./schema.sql:/docker-entrypoint-initdb.d/01-schema.sql:ro
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root", "-p${MYSQL_ROOT_PASSWORD:-newssys123}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    networks:
+      - newssys-network
+
+  # ============================================================================
+  # 后端 API 服务 (3 副本)
+  # ============================================================================
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile.backend
+    restart: unless-stopped
+    deploy:
+      replicas: 3
+    environment:
+      - DATABASE_TYPE=mysql
+      - DATABASE_HOST=mysql
+      - DATABASE_PORT=3306
+      - DATABASE_USER=root
+      - DATABASE_PASSWORD=${MYSQL_ROOT_PASSWORD:-newssys123}
+      - DATABASE_NAME=newssys
+      - DATABASE_CHARSET=utf8mb4
+      - DATABASE_POOL_SIZE=10
+      - DATABASE_MAX_OVERFLOW=20
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - OPENAI_BASE_URL=${OPENAI_BASE_URL:-https://api.openai.com/v1}
+      - OPENAI_MODEL=${OPENAI_MODEL:-gpt-4o-mini}
+      - AI_API_KEY=${AI_API_KEY:-}
+      - AI_BASE_URL=${AI_BASE_URL:-https://api.siliconflow.cn/v1}
+      - AI_MODEL=${AI_MODEL:-deepseek-ai/DeepSeek-V3}
+      - AI_MAX_TOKENS=${AI_MAX_TOKENS:-4096}
+      - AI_TEMPERATURE=${AI_TEMPERATURE:-0.3}
+      - AI_TIMEOUT=${AI_TIMEOUT:-60}
+      - ENVIRONMENT=production
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      - ENABLE_SCHEDULER=false
+      - HEARTBEAT_TYPE=database
+      - SERVICE_MAX_UPTIME_SECONDS=${BACKEND_MAX_UPTIME_SECONDS:-86400}
+      - SERVICE_HEALTHCHECK_INTERVAL_SECONDS=${BACKEND_HEALTHCHECK_INTERVAL_SECONDS:-30}
+      - SERVICE_HEALTHCHECK_GRACE_SECONDS=${BACKEND_HEALTHCHECK_GRACE_SECONDS:-60}
+      - SERVICE_HEALTHCHECK_FAILURES=${BACKEND_HEALTHCHECK_FAILURES:-3}
+      - API_HEALTHCHECK_URL=http://127.0.0.1:8000/api/v1/health
+      - CORS_ORIGINS=["http://localhost","http://192.168.1.102"]
+      - FRONTEND_URL=http://192.168.1.102
+    volumes:
+      - ./src:/app/src:ro
+      - ./scripts:/app/scripts:ro
+      - newssys-logs:/app/logs
+    depends_on:
+      mysql:
+        condition: service_healthy
+    networks:
+      - newssys-network
+
+  # ============================================================================
+  # 调度器 Worker (仅 1 个实例，Leader 选举保护)
+  # ============================================================================
+  scheduler:
+    build:
+      context: .
+      dockerfile: Dockerfile.backend
+    restart: unless-stopped
+    command: ["python", "scripts/service_runner.py", "worker:scheduler"]
+    deploy:
+      replicas: 1
+    environment:
+      - DATABASE_TYPE=mysql
+      - DATABASE_HOST=mysql
+      - DATABASE_PORT=3306
+      - DATABASE_USER=root
+      - DATABASE_PASSWORD=${MYSQL_ROOT_PASSWORD:-newssys123}
+      - DATABASE_NAME=newssys
+      - DATABASE_CHARSET=utf8mb4
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - OPENAI_BASE_URL=${OPENAI_BASE_URL:-https://api.openai.com/v1}
+      - OPENAI_MODEL=${OPENAI_MODEL:-gpt-4o-mini}
+      - AI_API_KEY=${AI_API_KEY:-}
+      - AI_BASE_URL=${AI_BASE_URL:-https://api.siliconflow.cn/v1}
+      - AI_MODEL=${AI_MODEL:-deepseek-ai/DeepSeek-V3}
+      - AI_MAX_TOKENS=${AI_MAX_TOKENS:-4096}
+      - AI_TEMPERATURE=${AI_TEMPERATURE:-0.3}
+      - AI_TIMEOUT=${AI_TIMEOUT:-60}
+      - ENVIRONMENT=production
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      - ENABLE_SCHEDULER=true
+      - HEARTBEAT_TYPE=database
+      - WORKER_TYPE=scheduler
+      - SCHEDULER_HEARTBEAT_FILE=/tmp/newssys-scheduler-heartbeat
+      - SCHEDULER_HEARTBEAT_STALE_SECONDS=${WORKER_HEARTBEAT_STALE_SECONDS:-90}
+      - SERVICE_MAX_UPTIME_SECONDS=${WORKER_MAX_UPTIME_SECONDS:-86400}
+      - SERVICE_HEALTHCHECK_INTERVAL_SECONDS=${WORKER_HEALTHCHECK_INTERVAL_SECONDS:-30}
+      - SERVICE_HEALTHCHECK_GRACE_SECONDS=${WORKER_HEALTHCHECK_GRACE_SECONDS:-60}
+      - SERVICE_HEALTHCHECK_FAILURES=${WORKER_HEALTHCHECK_FAILURES:-3}
+    volumes:
+      - ./src:/app/src:ro
+      - ./scripts:/app/scripts:ro
+      - newssys-logs:/app/logs
+    depends_on:
+      mysql:
+        condition: service_healthy
+    networks:
+      - newssys-network
+
+  # ============================================================================
+  # 爬取 Worker (3 副本)
+  # ============================================================================
+  crawl-worker:
+    build:
+      context: .
+      dockerfile: Dockerfile.backend
+    restart: unless-stopped
+    command: ["python", "scripts/service_runner.py", "worker:crawl"]
+    deploy:
+      replicas: 3
+    environment:
+      - DATABASE_TYPE=mysql
+      - DATABASE_HOST=mysql
+      - DATABASE_PORT=3306
+      - DATABASE_USER=root
+      - DATABASE_PASSWORD=${MYSQL_ROOT_PASSWORD:-newssys123}
+      - DATABASE_NAME=newssys
+      - DATABASE_CHARSET=utf8mb4
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - OPENAI_BASE_URL=${OPENAI_BASE_URL:-https://api.openai.com/v1}
+      - OPENAI_MODEL=${OPENAI_MODEL:-gpt-4o-mini}
+      - AI_API_KEY=${AI_API_KEY:-}
+      - AI_BASE_URL=${AI_BASE_URL:-https://api.siliconflow.cn/v1}
+      - AI_MODEL=${AI_MODEL:-deepseek-ai/DeepSeek-V3}
+      - ENVIRONMENT=production
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      - HEARTBEAT_TYPE=database
+      - WORKER_TYPE=crawl
+      - CRAWL_HEARTBEAT_FILE=/tmp/newssys-crawl-heartbeat
+      - CRAWL_HEARTBEAT_STALE_SECONDS=${WORKER_HEARTBEAT_STALE_SECONDS:-90}
+      - SERVICE_MAX_UPTIME_SECONDS=${WORKER_MAX_UPTIME_SECONDS:-86400}
+      - SERVICE_HEALTHCHECK_INTERVAL_SECONDS=${WORKER_HEALTHCHECK_INTERVAL_SECONDS:-30}
+      - SERVICE_HEALTHCHECK_GRACE_SECONDS=${WORKER_HEALTHCHECK_GRACE_SECONDS:-60}
+      - SERVICE_HEALTHCHECK_FAILURES=${WORKER_HEALTHCHECK_FAILURES:-3}
+    volumes:
+      - ./src:/app/src:ro
+      - ./scripts:/app/scripts:ro
+      - newssys-logs:/app/logs
+    depends_on:
+      mysql:
+        condition: service_healthy
+    networks:
+      - newssys-network
+
+  # ============================================================================
+  # Sitemap 同步 Worker (2 副本)
+  # ============================================================================
+  sitemap-worker:
+    build:
+      context: .
+      dockerfile: Dockerfile.backend
+    restart: unless-stopped
+    command: ["python", "scripts/service_runner.py", "worker:sitemap"]
+    deploy:
+      replicas: 2
+    environment:
+      - DATABASE_TYPE=mysql
+      - DATABASE_HOST=mysql
+      - DATABASE_PORT=3306
+      - DATABASE_USER=root
+      - DATABASE_PASSWORD=${MYSQL_ROOT_PASSWORD:-newssys123}
+      - DATABASE_NAME=newssys
+      - DATABASE_CHARSET=utf8mb4
+      - ENVIRONMENT=production
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      - HEARTBEAT_TYPE=database
+      - WORKER_TYPE=sitemap
+      - SITEMAP_HEARTBEAT_FILE=/tmp/newssys-sitemap-heartbeat
+      - SITEMAP_HEARTBEAT_STALE_SECONDS=${WORKER_HEARTBEAT_STALE_SECONDS:-90}
+      - SERVICE_MAX_UPTIME_SECONDS=${WORKER_MAX_UPTIME_SECONDS:-86400}
+      - SERVICE_HEALTHCHECK_INTERVAL_SECONDS=${WORKER_HEALTHCHECK_INTERVAL_SECONDS:-30}
+      - SERVICE_HEALTHCHECK_GRACE_SECONDS=${WORKER_HEALTHCHECK_GRACE_SECONDS:-60}
+      - SERVICE_HEALTHCHECK_FAILURES=${WORKER_HEALTHCHECK_FAILURES:-3}
+    volumes:
+      - ./src:/app/src:ro
+      - ./scripts:/app/scripts:ro
+      - newssys-logs:/app/logs
+    depends_on:
+      mysql:
+        condition: service_healthy
+    networks:
+      - newssys-network
+
+  # ============================================================================
+  # 报告 Worker (3 副本)
+  # ============================================================================
+  report-worker:
+    build:
+      context: .
+      dockerfile: Dockerfile.backend
+    restart: unless-stopped
+    command: ["python", "scripts/service_runner.py", "worker:report"]
+    deploy:
+      replicas: 3
+    environment:
+      - DATABASE_TYPE=mysql
+      - DATABASE_HOST=mysql
+      - DATABASE_PORT=3306
+      - DATABASE_USER=root
+      - DATABASE_PASSWORD=${MYSQL_ROOT_PASSWORD:-newssys123}
+      - DATABASE_NAME=newssys
+      - DATABASE_CHARSET=utf8mb4
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - OPENAI_BASE_URL=${OPENAI_BASE_URL:-https://api.openai.com/v1}
+      - OPENAI_MODEL=${OPENAI_MODEL:-gpt-4o-mini}
+      - AI_API_KEY=${AI_API_KEY:-}
+      - AI_BASE_URL=${AI_BASE_URL:-https://api.siliconflow.cn/v1}
+      - AI_MODEL=${AI_MODEL:-deepseek-ai/DeepSeek-V3}
+      - AI_MAX_TOKENS=${AI_MAX_TOKENS:-4096}
+      - AI_TEMPERATURE=${AI_TEMPERATURE:-0.3}
+      - AI_TIMEOUT=${AI_TIMEOUT:-60}
+      - ENVIRONMENT=production
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      - HEARTBEAT_TYPE=database
+      - WORKER_TYPE=report
+      - REPORT_HEARTBEAT_FILE=/tmp/newssys-report-heartbeat
+      - REPORT_HEARTBEAT_STALE_SECONDS=${WORKER_HEARTBEAT_STALE_SECONDS:-90}
+      - SERVICE_MAX_UPTIME_SECONDS=${WORKER_MAX_UPTIME_SECONDS:-86400}
+      - SERVICE_HEALTHCHECK_INTERVAL_SECONDS=${WORKER_HEALTHCHECK_INTERVAL_SECONDS:-30}
+      - SERVICE_HEALTHCHECK_GRACE_SECONDS=${WORKER_HEALTHCHECK_GRACE_SECONDS:-60}
+      - SERVICE_HEALTHCHECK_FAILURES=${WORKER_HEALTHCHECK_FAILURES:-3}
+    volumes:
+      - ./src:/app/src:ro
+      - ./scripts:/app/scripts:ro
+      - newssys-logs:/app/logs
+    depends_on:
+      mysql:
+        condition: service_healthy
+    networks:
+      - newssys-network
+
+  # ============================================================================
+  # 搜索 Worker (3 副本)
+  # ============================================================================
+  search-worker:
+    build:
+      context: .
+      dockerfile: Dockerfile.backend
+    restart: unless-stopped
+    command: ["python", "scripts/service_runner.py", "worker:search"]
+    deploy:
+      replicas: 3
+    environment:
+      - DATABASE_TYPE=mysql
+      - DATABASE_HOST=mysql
+      - DATABASE_PORT=3306
+      - DATABASE_USER=root
+      - DATABASE_PASSWORD=${MYSQL_ROOT_PASSWORD:-newssys123}
+      - DATABASE_NAME=newssys
+      - DATABASE_CHARSET=utf8mb4
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - OPENAI_BASE_URL=${OPENAI_BASE_URL:-https://api.openai.com/v1}
+      - OPENAI_MODEL=${OPENAI_MODEL:-gpt-4o-mini}
+      - AI_API_KEY=${AI_API_KEY:-}
+      - AI_BASE_URL=${AI_BASE_URL:-https://api.siliconflow.cn/v1}
+      - AI_MODEL=${AI_MODEL:-deepseek-ai/DeepSeek-V3}
+      - ENVIRONMENT=production
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      - HEARTBEAT_TYPE=database
+      - WORKER_TYPE=search
+      - SEARCH_HEARTBEAT_FILE=/tmp/newssys-search-heartbeat
+      - SEARCH_HEARTBEAT_STALE_SECONDS=${WORKER_HEARTBEAT_STALE_SECONDS:-90}
+      - SERVICE_MAX_UPTIME_SECONDS=${WORKER_MAX_UPTIME_SECONDS:-86400}
+      - SERVICE_HEALTHCHECK_INTERVAL_SECONDS=${WORKER_HEALTHCHECK_INTERVAL_SECONDS:-30}
+      - SERVICE_HEALTHCHECK_GRACE_SECONDS=${WORKER_HEALTHCHECK_GRACE_SECONDS:-60}
+      - SERVICE_HEALTHCHECK_FAILURES=${WORKER_HEALTHCHECK_FAILURES:-3}
+    volumes:
+      - ./src:/app/src:ro
+      - ./scripts:/app/scripts:ro
+      - newssys-logs:/app/logs
+    depends_on:
+      mysql:
+        condition: service_healthy
+    networks:
+      - newssys-network
+
+  # ============================================================================
+  # AI 对话 Worker (3 副本)
+  # ============================================================================
+  ai-worker:
+    build:
+      context: .
+      dockerfile: Dockerfile.backend
+    restart: unless-stopped
+    command: ["python", "scripts/service_runner.py", "worker:ai"]
+    deploy:
+      replicas: 3
+    environment:
+      - DATABASE_TYPE=mysql
+      - DATABASE_HOST=mysql
+      - DATABASE_PORT=3306
+      - DATABASE_USER=root
+      - DATABASE_PASSWORD=${MYSQL_ROOT_PASSWORD:-newssys123}
+      - DATABASE_NAME=newssys
+      - DATABASE_CHARSET=utf8mb4
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - OPENAI_BASE_URL=${OPENAI_BASE_URL:-https://api.openai.com/v1}
+      - OPENAI_MODEL=${OPENAI_MODEL:-gpt-4o-mini}
+      - AI_API_KEY=${AI_API_KEY:-}
+      - AI_BASE_URL=${AI_BASE_URL:-https://api.siliconflow.cn/v1}
+      - AI_MODEL=${AI_MODEL:-deepseek-ai/DeepSeek-V3}
+      - AI_MAX_TOKENS=${AI_MAX_TOKENS:-4096}
+      - AI_TEMPERATURE=${AI_TEMPERATURE:-0.3}
+      - AI_TIMEOUT=${AI_TIMEOUT:-60}
+      - ENVIRONMENT=production
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      - HEARTBEAT_TYPE=database
+      - WORKER_TYPE=ai
+      - AI_HEARTBEAT_FILE=/tmp/newssys-ai-heartbeat
+      - AI_HEARTBEAT_STALE_SECONDS=${WORKER_HEARTBEAT_STALE_SECONDS:-90}
+      - SERVICE_MAX_UPTIME_SECONDS=${WORKER_MAX_UPTIME_SECONDS:-86400}
+      - SERVICE_HEALTHCHECK_INTERVAL_SECONDS=${WORKER_HEALTHCHECK_INTERVAL_SECONDS:-30}
+      - SERVICE_HEALTHCHECK_GRACE_SECONDS=${WORKER_HEALTHCHECK_GRACE_SECONDS:-60}
+      - SERVICE_HEALTHCHECK_FAILURES=${WORKER_HEALTHCHECK_FAILURES:-3}
+    volumes:
+      - ./src:/app/src:ro
+      - ./scripts:/app/scripts:ro
+      - newssys-logs:/app/logs
+    depends_on:
+      mysql:
+        condition: service_healthy
+    networks:
+      - newssys-network
+
+  # ============================================================================
+  # 前端服务 (3 副本)
+  # ============================================================================
+  frontend:
+    build:
+      context: .
+      dockerfile: Dockerfile.frontend
+      args:
+        - VITE_API_BASE_URL=/api/v1
+    restart: unless-stopped
+    deploy:
+      replicas: 3
+    depends_on:
+      - backend
+    networks:
+      - newssys-network
+
+  # ============================================================================
+  # Nginx 反向代理 + 管理面板
+  # ============================================================================
+  nginx:
+    image: nginx:alpine
+    restart: unless-stopped
+    ports:
+      - "80:80"
+    volumes:
+      - ./nginx/nginx.prod.conf:/etc/nginx/nginx.conf:ro
+      - ./nginx/admin.html:/usr/share/nginx/html/admin.html:ro
+    depends_on:
+      - backend
+      - frontend
+    networks:
+      - newssys-network
+
+# ============================================================================
+# 持久化数据卷
+# ============================================================================
+volumes:
+  mysql-data:
+    driver: local
+  newssys-logs:
+    driver: local
+
+# ============================================================================
+# 网络
+# ============================================================================
+networks:
+  newssys-network:
+    driver: bridge

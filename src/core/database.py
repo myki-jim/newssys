@@ -159,6 +159,7 @@ def init_engine():
             "max_overflow": settings.database.max_overflow,
             "pool_pre_ping": True,
             "pool_recycle": 3600,
+            "connect_args": {"charset": "utf8mb4"},
         }
 
     _engine = create_async_engine(settings.database.url, **engine_kwargs)
@@ -232,6 +233,7 @@ async def init_database():
         CrawlSourceOrm,
         ReportMetadataOrm,
         ReportReferenceOrm,
+        WorkerHeartbeatOrm,
     )
 
     init_engine()

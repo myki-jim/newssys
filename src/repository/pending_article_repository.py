@@ -14,7 +14,7 @@ from src.core.models import (
     PendingArticleCreate,
     PendingArticleStatus,
 )
-from src.repository.base import BaseRepository
+from src.repository.base import BaseRepository, nulls_last_order
 
 
 class PendingArticleRepository(BaseRepository):
@@ -143,10 +143,11 @@ class PendingArticleRepository(BaseRepository):
             where_clause += " AND status = :status"
             params["status"] = status.value
 
+        nulls_order = nulls_last_order("publish_time")
         sql = f"""
             SELECT * FROM {self.TABLE_NAME}
             WHERE {where_clause}
-            ORDER BY publish_time DESC NULLS LAST, created_at DESC
+            ORDER BY {nulls_order}, created_at DESC
             LIMIT :limit OFFSET :offset
         """
 
@@ -176,10 +177,11 @@ class PendingArticleRepository(BaseRepository):
             where_clause += " AND status = :status"
             params["status"] = status.value
 
+        nulls_order = nulls_last_order("publish_time")
         sql = f"""
             SELECT * FROM {self.TABLE_NAME}
             WHERE {where_clause}
-            ORDER BY publish_time DESC NULLS LAST, created_at DESC
+            ORDER BY {nulls_order}, created_at DESC
         """
 
         return await self.fetch_all(sql, params)

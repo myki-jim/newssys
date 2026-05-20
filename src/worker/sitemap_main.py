@@ -1,6 +1,6 @@
 """
-爬取 worker 入口
-只消费爬取相关任务。
+Sitemap 同步 worker 入口
+只消费 sitemap_sync 任务，与爬取 worker 隔离避免饥饿。
 """
 
 from __future__ import annotations
@@ -15,18 +15,16 @@ from src.worker.runtime import run_worker_process
 async def main() -> None:
     task_worker = TaskWorkerService(
         task_types=[
-            TaskType.CRAWL_PENDING.value,
-            TaskType.RETRY_FAILED.value,
-            TaskType.CLEANUP_LOW_QUALITY.value,
+            TaskType.SITEMAP_SYNC.value,
         ],
-        worker_name="爬取 worker",
+        worker_name="Sitemap 同步 worker",
     )
     await run_worker_process(
-        worker_name="爬取 worker",
-        heartbeat_file=settings.runtime.crawl_heartbeat_file,
+        worker_name="Sitemap 同步 worker",
+        heartbeat_file=settings.runtime.sitemap_heartbeat_file,
         heartbeat_interval_seconds=settings.runtime.scheduler_heartbeat_interval_seconds,
-        workers=[("crawl-task-worker", task_worker.run_forever)],
-        worker_type="crawl",
+        workers=[("sitemap-task-worker", task_worker.run_forever)],
+        worker_type="sitemap",
     )
 
 

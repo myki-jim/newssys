@@ -22,6 +22,7 @@ from src.core.models import (
     SitemapFetchStatus,
     SitemapUpdate,
 )
+from src.repository.base import nulls_last_order
 from src.repository.pending_article_repository import PendingArticleRepository
 from src.repository.sitemap_repository import SitemapRepository
 from src.services.sitemap_service import SitemapService
@@ -120,8 +121,9 @@ async def list_pending_articles(
         articles = await repo.get_by_source(source_id, status=status_enum, limit=limit, offset=offset)
     else:
         # 获取所有待爬文章，按发布时间倒序（最新的优先），没有发布时间的排在最后（自动过滤低质量）
+        nulls_order = nulls_last_order("publish_time")
         articles = await repo.fetch_all(
-            f"SELECT * FROM pending_articles WHERE status != 'low_quality' ORDER BY publish_time DESC NULLS LAST, created_at DESC LIMIT {limit} OFFSET {offset}"
+            f"SELECT * FROM pending_articles WHERE status != 'low_quality' ORDER BY {nulls_order}, created_at DESC LIMIT {limit} OFFSET {offset}"
         )
 
     return APIResponse(success=True, data=[dict(a) for a in articles])

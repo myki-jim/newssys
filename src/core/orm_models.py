@@ -22,6 +22,7 @@ class ArticleStatus(str, Enum):
     PROCESSED = "processed"
     SYNCED = "synced"
     FAILED = "failed"
+    LOW_QUALITY = "low_quality"
 
 
 class FetchStatus(str, Enum):
@@ -54,7 +55,8 @@ class CrawlSourceOrm(Base):
 
     # Robots.txt 相关
     robots_status: Mapped[RobotsStatus] = mapped_column(
-        SQLEnum(RobotsStatus), nullable=False, default=RobotsStatus.PENDING
+        SQLEnum(RobotsStatus, values_callable=lambda x: [e.value for e in x]),
+        nullable=False, default=RobotsStatus.PENDING
     )
     crawl_delay: Mapped[int | None] = mapped_column(Integer, nullable=True)
     robots_fetched_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
@@ -105,10 +107,12 @@ class ArticleOrm(Base):
 
     # 双重状态
     status: Mapped[ArticleStatus] = mapped_column(
-        SQLEnum(ArticleStatus), nullable=False, default=ArticleStatus.RAW
+        SQLEnum(ArticleStatus, values_callable=lambda x: [e.value for e in x]),
+        nullable=False, default=ArticleStatus.RAW
     )
     fetch_status: Mapped[FetchStatus] = mapped_column(
-        SQLEnum(FetchStatus), nullable=False, default=FetchStatus.PENDING
+        SQLEnum(FetchStatus, values_callable=lambda x: [e.value for e in x]),
+        nullable=False, default=FetchStatus.PENDING
     )
 
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -213,10 +217,11 @@ class SitemapOrm(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     source_id: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
-    url: Mapped[str] = mapped_column(String(2048), nullable=False, unique=True)
+    url: Mapped[str] = mapped_column(String(768), nullable=False, unique=True)
     last_fetched: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     fetch_status: Mapped[SitemapFetchStatus] = mapped_column(
-        SQLEnum(SitemapFetchStatus), nullable=False, default=SitemapFetchStatus.PENDING
+        SQLEnum(SitemapFetchStatus, values_callable=lambda x: [e.value for e in x]),
+        nullable=False, default=SitemapFetchStatus.PENDING
     )
     article_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
 
@@ -240,7 +245,8 @@ class PendingArticleOrm(Base):
     title: Mapped[str | None] = mapped_column(String(500), nullable=True)
     publish_time: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     status: Mapped[PendingArticleStatus] = mapped_column(
-        SQLEnum(PendingArticleStatus), nullable=False, default=PendingArticleStatus.PENDING
+        SQLEnum(PendingArticleStatus, values_callable=lambda x: [e.value for e in x]),
+        nullable=False, default=PendingArticleStatus.PENDING
     )
 
     created_at: Mapped[datetime] = mapped_column(
@@ -278,7 +284,8 @@ class TaskOrm(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     task_type: Mapped[str] = mapped_column(String(100), nullable=False, index=True)
     status: Mapped[TaskStatus] = mapped_column(
-        SQLEnum(TaskStatus), nullable=False, default=TaskStatus.PENDING, index=True
+        SQLEnum(TaskStatus, values_callable=lambda x: [e.value for e in x]),
+        nullable=False, default=TaskStatus.PENDING, index=True
     )
     title: Mapped[str | None] = mapped_column(String(500), nullable=True)
     params: Mapped[str | None] = mapped_column(Text, nullable=True)  # JSON
@@ -291,8 +298,25 @@ class TaskOrm(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime, nullable=False, default=datetime.now, index=True
     )
+    worker_id: Mapped[str | None] = mapped_column(String(100), nullable=True, index=True)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime, nullable=False, default=datetime.now, onupdate=datetime.now
+    )
+
+
+class WorkerHeartbeatOrm(Base):
+    """Worker 心跳 ORM 模型"""
+    __tablename__ = "worker_heartbeats"
+
+    worker_id: Mapped[str] = mapped_column(String(255), primary_key=True)
+    worker_type: Mapped[str] = mapped_column(String(50), nullable=False, index=True)
+    hostname: Mapped[str] = mapped_column(String(255), nullable=False)
+    pid: Mapped[int] = mapped_column(Integer, nullable=False)
+    last_heartbeat_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, default=datetime.now, index=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, default=datetime.now
     )
 
 
@@ -303,7 +327,8 @@ class TaskEventOrm(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     task_id: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
     event_type: Mapped[TaskEventType] = mapped_column(
-        SQLEnum(TaskEventType), nullable=False
+        SQLEnum(TaskEventType, values_callable=lambda x: [e.value for e in x]),
+        nullable=False
     )
     event_data: Mapped[str | None] = mapped_column(Text, nullable=True)  # JSON
     created_at: Mapped[datetime] = mapped_column(
@@ -360,6 +385,7 @@ class ScheduleType(str, Enum):
     SITEMAP_CRAWL = "sitemap_crawl"  # Sitemap爬取
     ARTICLE_CRAWL = "article_crawl"  # 文章自动爬取
     KEYWORD_SEARCH = "keyword_search"  # 关键词搜索
+    CLEANUP_LOW_QUALITY = "cleanup_low_quality"  # 低质量清理
 
 
 class ScheduleStatus(str, Enum):
@@ -377,10 +403,12 @@ class ScheduleOrm(Base):
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
     schedule_type: Mapped[ScheduleType] = mapped_column(
-        SQLEnum(ScheduleType), nullable=False, index=True
+        SQLEnum(ScheduleType, values_callable=lambda x: [e.value for e in x]),
+        nullable=False, index=True
     )
     status: Mapped[ScheduleStatus] = mapped_column(
-        SQLEnum(ScheduleStatus), nullable=False, default=ScheduleStatus.ACTIVE
+        SQLEnum(ScheduleStatus, values_callable=lambda x: [e.value for e in x]),
+        nullable=False, default=ScheduleStatus.ACTIVE
     )
 
     # 调度配置
@@ -450,7 +478,10 @@ class UserOrm(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     username: Mapped[str] = mapped_column(String(50), nullable=False, unique=True, index=True)
     password: Mapped[str] = mapped_column(String(255), nullable=False)  # 明文存储
-    role: Mapped[UserRole] = mapped_column(SQLEnum(UserRole), nullable=False, default=UserRole.USER)
+    role: Mapped[UserRole] = mapped_column(
+        SQLEnum(UserRole, values_callable=lambda x: [e.value for e in x]),
+        nullable=False, default=UserRole.USER
+    )
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     office: Mapped[str | None] = mapped_column(String(50), nullable=True)  # 办公室编号
 

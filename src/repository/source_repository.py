@@ -9,6 +9,8 @@ from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from src.core.config import settings
+
 from src.core.models import CrawlSource, ParserConfig, SourceCreate, SourceUpdate
 from src.repository.base import BaseRepository
 
@@ -220,13 +222,21 @@ class SourceRepository(BaseRepository):
         placeholders = {f"_{k}": v for k, v in data.items()}
         placeholders["_id"] = source_id
 
+        if settings.database.is_mysql:
+            sql = f"""
+                UPDATE {self.TABLE_NAME}
+                SET {', '.join(set_clauses)}
+                WHERE id = :_id
+            """
+            await self.execute_write(sql, placeholders)
+            return await self.fetch_by_id(source_id)
+
         sql = f"""
             UPDATE {self.TABLE_NAME}
             SET {', '.join(set_clauses)}
             WHERE id = :_id
             RETURNING *
         """
-
         result = await self.fetch_one(sql, placeholders)
 
         if result and "parser_config" in result and result["parser_config"]:

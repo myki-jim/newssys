@@ -17,6 +17,7 @@ class ArticleStatus(str, Enum):
     PROCESSED = "processed"  # 已处理状态
     SYNCED = "synced"  # 已同步状态
     FAILED = "failed"  # 失败状态
+    LOW_QUALITY = "low_quality"  # 低质量（标记为低质量，不再爬取）
 
 
 class FetchStatus(str, Enum):
@@ -605,6 +606,13 @@ class Report(BaseModel):
     content: str | None = Field(default=None, description="报告内容（Markdown）")
     sections: list[dict[str, Any]] = Field(default_factory=list, description="报告板块")
 
+    @field_validator("sections", mode="before")
+    @classmethod
+    def _coerce_sections_to_list(cls, v: Any) -> list[dict[str, Any]]:
+        if v is None:
+            return []
+        return v
+
     # 状态
     status: ReportStatus = Field(default=ReportStatus.DRAFT, description="报告状态")
     agent_stage: ReportAgentStage = Field(default=ReportAgentStage.INITIALIZING, description="Agent阶段")
@@ -624,6 +632,13 @@ class ReportTemplate(BaseModel):
     description: str | None = Field(default=None, description="模板描述")
     system_prompt: str = Field(description="系统提示词")
     section_template: list[dict[str, Any]] = Field(default_factory=list, description="板块模板")
+
+    @field_validator("section_template", mode="before")
+    @classmethod
+    def _coerce_section_template_to_list(cls, v: Any) -> list[dict[str, Any]]:
+        if v is None:
+            return []
+        return v
     is_default: bool = Field(default=False, description="是否默认模板")
     created_at: datetime | None = None
     updated_at: datetime | None = None

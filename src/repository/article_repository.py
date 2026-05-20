@@ -9,6 +9,8 @@ from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from src.core.config import settings
+
 from src.core.models import Article, ArticleCreate, ArticleStatus, ArticleUpdate, FetchStatus
 from src.repository.base import BaseRepository
 
@@ -285,15 +287,22 @@ class ArticleRepository(BaseRepository):
         placeholders = {f"_{k}": v for k, v in update_data.items()}
         placeholders["_id"] = article_id
 
+        if settings.database.is_mysql:
+            sql = f"""
+                UPDATE {self.TABLE_NAME}
+                SET {', '.join(set_clauses)}
+                WHERE id = :_id
+            """
+            await self.execute_write(sql, placeholders)
+            return await self.fetch_by_id(article_id)
+
         sql = f"""
             UPDATE {self.TABLE_NAME}
             SET {', '.join(set_clauses)}
             WHERE id = :_id
             RETURNING *
         """
-
         result = await self.fetch_one(sql, placeholders)
-        # 重要：UPDATE 语句需要显式提交事务
         await self.session.commit()
         return dict(result) if result else await self.fetch_by_id(article_id)  # type: ignore
 

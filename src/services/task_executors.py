@@ -21,6 +21,7 @@ from src.core.models import (
     TaskEventType,
 )
 from src.repository.article_repository import ArticleRepository
+from src.repository.base import nulls_last_order
 from src.repository.conversation_repository import ConversationRepository
 from src.repository.pending_article_repository import PendingArticleRepository
 from src.repository.report_repository import ReportRepository, ReportTemplateRepository
@@ -297,10 +298,11 @@ class CrawlPendingExecutor(TaskExecutor):
 
                 source_name = source["site_name"]
                 source_id = source["id"]
+                nulls_order = nulls_last_order("publish_time")
                 pending_articles = await pending_repo.fetch_all(
                     f"""SELECT * FROM pending_articles
                     WHERE source_id = :source_id AND status = :status
-                    ORDER BY publish_time DESC NULLS LAST, created_at DESC
+                    ORDER BY {nulls_order}, created_at DESC
                     LIMIT {limit_per_source}""",
                     {
                         "source_id": source_id,

@@ -4,6 +4,7 @@ Repository 基类模块
 """
 
 import asyncio
+import logging
 from collections.abc import AsyncGenerator
 from typing import Any, TypeVar
 
@@ -28,6 +29,8 @@ T = TypeVar("T")
 RowAny = Row[Any]
 SQLITE_LOCK_RETRY_ATTEMPTS = 5
 SQLITE_LOCK_RETRY_BASE_SECONDS = 0.15
+
+logger = logging.getLogger(__name__)
 
 
 class BaseRepository:
@@ -180,20 +183,33 @@ class BaseRepository:
         Returns:
             插入的 ID、指定字段值，或完整行字典（当 returning="*"）
         """
+        from src.core.config import settings
+
         columns = ", ".join(data.keys())
         placeholders = ", ".join(f":{k}" for k in data.keys())
         sql = f"INSERT INTO {table} ({columns}) VALUES ({placeholders})"
 
+        if settings.database.is_mysql:
+            # MySQL 不支持 RETURNING，使用 lastrowid 或回查
+            result = await self.execute(sql, data)
+            await self.session.commit()
+            last_id = result.lastrowid
+            if returning and returning != "*" and last_id:
+                return last_id
+            if returning == "*" and last_id:
+                row = await self.fetch_one(f"SELECT * FROM {table} WHERE id = :id", {"id": last_id})
+                return dict(row) if row else None
+            return last_id
+
+        # SQLite / PostgreSQL: 使用 RETURNING
         if returning:
             sql += f" RETURNING {returning}"
             result = await self.execute(sql, data)
             if returning == "*":
-                # Return full row as dict
                 row = result.mappings().first()
                 await self.session.commit()
                 return dict(row) if row else None
             else:
-                # Return single column value
                 row = result.first()
                 await self.session.commit()
                 return row[0] if row else None
@@ -308,3 +324,52 @@ class BaseRepository:
         sql = f"SELECT 1 FROM {table} WHERE {where} LIMIT 1"
         result = await self.fetch_val(sql, params)
         return result is not None
+
+    async def acquire_advisory_lock(self, lock_name: str, timeout: int = 5) -> bool:
+        """
+        获取分布式咨询锁（用于 Leader 选举）
+
+        Args:
+            lock_name: 锁名称
+            timeout: 等待超时秒数（0 = 非阻塞）
+
+        Returns:
+            是否成功获取锁
+        """
+        from src.core.config import settings
+
+        if settings.database.is_mysql:
+            result = await self.fetch_val(
+                "SELECT GET_LOCK(:name, :timeout) AS acquired",
+                {"name": lock_name, "timeout": timeout},
+                column="acquired",
+            )
+            return bool(result)
+        else:
+            # SQLite: 无分布式锁，始终返回 True（单实例假设备份）
+            return True
+
+    async def release_advisory_lock(self, lock_name: str) -> bool:
+        """释放分布式咨询锁"""
+        from src.core.config import settings
+
+        if settings.database.is_mysql:
+            result = await self.fetch_val(
+                "SELECT RELEASE_LOCK(:name) AS released",
+                {"name": lock_name},
+                column="released",
+            )
+            return bool(result)
+        return True
+
+
+def nulls_last_order(column: str, direction: str = "DESC") -> str:
+    """
+    返回跨数据库兼容的 NULLS LAST 排序子句。
+    MySQL 使用 `col IS NULL, col DESC`，SQLite 使用 `col DESC NULLS LAST`。
+    """
+    from src.core.config import settings
+
+    if settings.database.is_mysql:
+        return f"{column} IS NULL, {column} {direction}"
+    return f"{column} {direction} NULLS LAST"

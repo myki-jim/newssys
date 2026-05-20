@@ -5,6 +5,8 @@
 
 import asyncio
 import logging
+import os
+import socket
 from collections.abc import Iterable
 
 from src.core.database import get_async_session
@@ -12,6 +14,13 @@ from src.repository.task_repository import TaskRepository
 from src.services.task_manager import TaskExecutorRegistry, TaskManager
 
 logger = logging.getLogger(__name__)
+
+
+def _generate_worker_id(worker_name: str) -> str:
+    """生成 Worker 实例唯一标识。"""
+    hostname = socket.gethostname()
+    pid = os.getpid()
+    return f"{worker_name}-{hostname}-{pid}"
 
 
 class TaskWorkerService:
@@ -22,10 +31,12 @@ class TaskWorkerService:
         poll_interval: int = 3,
         task_types: Iterable[str] | None = None,
         worker_name: str = "任务 worker",
+        worker_id: str = "",
     ):
         self.poll_interval = poll_interval
         self.task_types = set(task_types or [])
         self.worker_name = worker_name
+        self.worker_id = worker_id or _generate_worker_id(worker_name)
         self.running = False
 
     async def run_forever(self) -> None:
@@ -36,8 +47,9 @@ class TaskWorkerService:
 
         self.running = True
         logger.info(
-            "%s 启动，轮询间隔: %s秒，任务类型: %s",
+            "%s (%s) 启动，轮询间隔: %s秒，任务类型: %s",
             self.worker_name,
+            self.worker_id,
             self.poll_interval,
             sorted(self.task_types) if self.task_types else "全部已注册类型",
         )
@@ -54,7 +66,7 @@ class TaskWorkerService:
             self.running = False
 
     async def run_once(self) -> int:
-        """执行一轮任务扫描。"""
+        """执行一轮任务扫描（原子抢占）。"""
         registered_types = TaskExecutorRegistry.get_registered_types()
         if self.task_types:
             registered_types = [task_type for task_type in registered_types if task_type in self.task_types]
@@ -64,12 +76,11 @@ class TaskWorkerService:
 
         async with get_async_session() as db:
             repo = TaskRepository(db)
-            pending_tasks = await repo.get_pending_tasks(task_types=registered_types, limit=1)
+            task = await repo.claim_next_task(self.worker_id, task_types=registered_types)
 
-        if not pending_tasks:
+        if not task:
             return 0
 
-        task = pending_tasks[0]
-        logger.info("%s 开始执行任务 %s (%s)", self.worker_name, task["id"], task["task_type"])
+        logger.info("%s 已抢占任务 %s (%s)", self.worker_name, task["id"], task["task_type"])
         await TaskManager.execute_task_in_background(task["id"])
         return 1

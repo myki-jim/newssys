@@ -18,6 +18,7 @@ async def main() -> None:
         heartbeat_interval_seconds=settings.runtime.scheduler_heartbeat_interval_seconds,
         workers=[("scheduler", scheduler.run_forever)],
         stop_hooks=[scheduler.stop],
+        worker_type="scheduler",
     )
 
 

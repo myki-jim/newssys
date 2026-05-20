@@ -105,39 +105,48 @@ class SchedulerService:
             raise
 
     async def _check_and_run_due_tasks(self) -> int:
-        """检查并执行到期任务。"""
-        async with get_async_session() as db:
-            repo = ScheduleRepository(db)
+        """检查并执行到期任务（含 Leader 选举）。"""
+        from src.repository.base import BaseRepository
+
+        # 获取 Leader 锁，持有到全部到期任务处理完毕
+        async with get_async_session() as lock_db:
+            base_repo = BaseRepository(lock_db)
+            acquired = await base_repo.acquire_advisory_lock("newssys_scheduler_leader", 5)
+            if not acquired:
+                logger.debug("未获取调度器 Leader 锁，跳过本轮")
+                return 0
+
+            repo = ScheduleRepository(lock_db)
             due_schedules = await repo.get_due_schedules()
 
-        if not due_schedules:
-            logger.debug("没有到期任务")
-            return 0
+            if not due_schedules:
+                logger.debug("没有到期任务")
+                return 0
 
-        logger.info("发现 %s 个到期任务", len(due_schedules))
+            logger.info("发现 %s 个到期任务", len(due_schedules))
 
-        executed = 0
-        for schedule in due_schedules:
-            task_id = None
-            try:
-                task_id = await self._create_schedule_task(schedule)
-                if task_id is not None:
-                    await self._mark_task_running(task_id)
-                dispatch_result = await self._dispatch_schedule(schedule)
-                await self._mark_next_run(schedule)
-                if task_id is not None:
-                    await self._mark_task_completed(
-                        task_id,
-                        {"schedule_id": schedule["id"], **dispatch_result},
-                    )
-                executed += 1
-                logger.info("任务 %s (ID: %s) 派发完成", schedule["name"], schedule["id"])
-            except asyncio.CancelledError:
-                raise
-            except Exception as exc:
-                if task_id is not None:
-                    await self._mark_task_failed(task_id, str(exc))
-                logger.error("执行任务 %s 失败: %s", schedule["name"], exc, exc_info=True)
+            executed = 0
+            for schedule in due_schedules:
+                task_id = None
+                try:
+                    task_id = await self._create_schedule_task(schedule)
+                    if task_id is not None:
+                        await self._mark_task_running(task_id)
+                    dispatch_result = await self._dispatch_schedule(schedule)
+                    await self._mark_next_run(schedule)
+                    if task_id is not None:
+                        await self._mark_task_completed(
+                            task_id,
+                            {"schedule_id": schedule["id"], **dispatch_result},
+                        )
+                    executed += 1
+                    logger.info("任务 %s (ID: %s) 派发完成", schedule["name"], schedule["id"])
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:
+                    if task_id is not None:
+                        await self._mark_task_failed(task_id, str(exc))
+                    logger.error("执行任务 %s 失败: %s", schedule["name"], exc, exc_info=True)
 
         return executed
 
@@ -243,33 +252,40 @@ class SchedulerService:
 
     async def _create_schedule_task(self, schedule: dict) -> int | None:
         """为计划任务创建对应的任务记录。"""
+        from src.core.config import settings
+
         async with get_async_session() as db:
-            result = await db.execute(
-                text(
-                    """
-                    INSERT INTO tasks (
-                        task_type, status, title, params,
-                        progress_current, progress_total, created_at, updated_at
-                    )
-                    VALUES (
-                        :task_type, :status, :title, :params,
-                        0, 0, :created_at, :updated_at
-                    )
-                    RETURNING id
-                    """
-                ),
-                {
-                    "task_type": f"schedule_{schedule['schedule_type']}",
-                    "status": "pending",
-                    "title": f"执行定时任务: {schedule['name']}",
-                    "params": json.dumps({"schedule_id": schedule["id"]}),
-                    "created_at": datetime.now(),
-                    "updated_at": datetime.now(),
-                },
+            insert_sql = text(
+                """
+                INSERT INTO tasks (
+                    task_type, status, title, params,
+                    progress_current, progress_total, created_at, updated_at
+                )
+                VALUES (
+                    :task_type, :status, :title, :params,
+                    0, 0, :created_at, :updated_at
+                )
+                """
             )
-            row = result.fetchone()
-            await db.commit()
-            return row[0] if row else None
+            params_dict = {
+                "task_type": f"schedule_{schedule['schedule_type']}",
+                "status": "pending",
+                "title": f"执行定时任务: {schedule['name']}",
+                "params": json.dumps({"schedule_id": schedule["id"]}),
+                "created_at": datetime.now(),
+                "updated_at": datetime.now(),
+            }
+            if settings.database.is_mysql:
+                result = await db.execute(insert_sql, params_dict)
+                await db.commit()
+                return result.lastrowid if result.lastrowid else None
+            else:
+                result = await db.execute(
+                    text(insert_sql.text + " RETURNING id"), params_dict
+                )
+                row = result.fetchone()
+                await db.commit()
+                return row[0] if row else None
 
     async def _mark_next_run(self, schedule: dict) -> None:
         """更新下次执行时间。"""

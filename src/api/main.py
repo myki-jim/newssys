@@ -7,6 +7,8 @@ import logging
 from contextlib import asynccontextmanager
 from typing import AsyncGenerator
 
+from sqlalchemy import text
+
 from fastapi import FastAPI, Request, status
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
@@ -160,13 +162,40 @@ async def general_exception_handler(request: Request, exc: Exception) -> JSONRes
 @app.get("/api/health")
 @app.get("/api/v1/health")
 async def health_check():
-    """健康检查"""
+    """健康检查（包含数据库和 Worker 状态）"""
+    db_status = "ok"
+    active_workers: list[dict] = []
+    try:
+        from src.core.database import get_async_session
+        from src.repository.worker_heartbeat_repository import WorkerHeartbeatRepository
+
+        async with get_async_session() as db:
+            # 检查数据库连通性
+            await db.execute(text("SELECT 1"))
+            # 获取活跃 Worker
+            try:
+                repo = WorkerHeartbeatRepository(db)
+                active_workers = await repo.get_active_workers(stale_seconds=90)
+            except Exception:
+                pass  # worker_heartbeats 表可能还不存在
+    except Exception as e:
+        db_status = f"error: {e}"
+
+    # 检查是否有活跃的调度器 Leader
+    scheduler_active = any(
+        w.get("worker_type") == "scheduler" for w in active_workers
+    )
+
     return {
         "success": True,
         "data": {
-            "status": "healthy",
+            "status": "healthy" if db_status == "ok" else "degraded",
             "version": "2.0.0",
             "service": "newssys-api",
+            "database": db_status,
+            "active_workers": len(active_workers),
+            "worker_types": list({w.get("worker_type", "") for w in active_workers}),
+            "scheduler_leader": scheduler_active,
         },
     }
 
