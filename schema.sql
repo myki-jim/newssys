@@ -187,6 +187,8 @@ CREATE TABLE IF NOT EXISTS `schedules` (
     `config` JSON DEFAULT NULL,
     `last_run_at` TIMESTAMP NULL DEFAULT NULL,
     `next_run_at` TIMESTAMP NULL DEFAULT NULL,
+    `last_status` VARCHAR(50) DEFAULT NULL COMMENT '最后执行状态',
+    `last_error` TEXT DEFAULT NULL COMMENT '最后错误信息',
     `created_at` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
     `updated_at` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     INDEX `idx_status` (`status`),

@@ -366,6 +366,47 @@ services:
       - newssys-network
 
   # ============================================================================
+  # Claude Code UI (CloudCLI)
+  # ============================================================================
+  cloudcli:
+    build:
+      context: .
+      dockerfile: Dockerfile.cloudcli
+    restart: unless-stopped
+    environment:
+      - CLAUDE_CLI_PATH=${CLAUDE_CLI_PATH:-}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+      - ANTHROPIC_BASE_URL=${ANTHROPIC_BASE_URL:-}
+      - ANTHROPIC_MODEL=${ANTHROPIC_MODEL:-claude-sonnet-4-6}
+      - HOST=0.0.0.0
+      - SERVER_PORT=3001
+      - WORKSPACES_ROOT=/workspace
+    volumes:
+      - cloudcli-workspace:/workspace
+      - cloudcli-home:/root
+      - ./claude-config/skills:/root/.claude/skills:ro
+      - ./claude-config/commands:/root/.claude/commands:ro
+      - ./claude-config/mcp.json:/root/.claude/.mcp.json:ro
+      - ./scripts:/workspace/scripts:ro
+    networks:
+      - newssys-network
+
+  # ============================================================================
+  # Render Server — 通用内容展示服务
+  # ============================================================================
+  render-server:
+    build:
+      context: ./render-server
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    environment:
+      - RENDER_DATA_DIR=/data/renders
+    volumes:
+      - render-data:/data/renders
+    networks:
+      - newssys-network
+
+  # ============================================================================
   # Nginx 反向代理 + 管理面板
   # ============================================================================
   nginx:
@@ -373,12 +414,16 @@ services:
     restart: unless-stopped
     ports:
       - "80:80"
+      - "8080:8080"
+      - "8081:8081"
     volumes:
       - ./nginx/nginx.prod.conf:/etc/nginx/nginx.conf:ro
       - ./nginx/admin.html:/usr/share/nginx/html/admin.html:ro
     depends_on:
       - backend
       - frontend
+      - cloudcli
+      - render-server
     networks:
       - newssys-network
 
@@ -389,6 +434,12 @@ volumes:
   mysql-data:
     driver: local
   newssys-logs:
+    driver: local
+  cloudcli-workspace:
+    driver: local
+  cloudcli-home:
+    driver: local
+  render-data:
     driver: local
 
 # ============================================================================

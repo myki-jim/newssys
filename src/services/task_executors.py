@@ -647,13 +647,15 @@ class CleanupLowQualityExecutor(TaskExecutor):
                 # 计算时间阈值
                 one_year_ago = datetime.now() - timedelta(days=365)
                 one_year_future = datetime.now() + timedelta(days=365)
+                seven_days_ago = datetime.now() - timedelta(days=7)
 
-                # 1. 清理文章
+                # 1. 清理文章 (保留窗口: 1年)
                 find_low_quality_sql = """
                     SELECT id FROM articles WHERE
                         status != 'low_quality'
                         AND (
                             LENGTH(COALESCE(content, '')) < 50
+                            OR title IS NULL OR TRIM(COALESCE(title, '')) = ''
                             OR publish_time IS NULL
                             OR publish_time < :one_year_ago
                             OR publish_time > :one_year_future
@@ -676,21 +678,23 @@ class CleanupLowQualityExecutor(TaskExecutor):
                 if on_progress:
                     on_progress(60, 100, f"已标记 {article_marked} 篇文章，正在清理待爬文章...")
 
-                # 2. 清理待爬文章
+                # 2. 清理待爬文章 (保留窗口: 7天)
                 find_low_pending_sql = """
                     SELECT id FROM pending_articles WHERE
                         status != 'low_quality'
                         AND (
-                            publish_time IS NULL
+                            title IS NULL OR TRIM(COALESCE(title, '')) = ''
+                            OR publish_time IS NULL
                             OR publish_time < :one_year_ago
                             OR publish_time > :one_year_future
+                            OR created_at < :seven_days_ago
                         )
                     LIMIT 50000
                 """
 
                 pending_to_mark = await pending_repo.fetch_all(
                     find_low_pending_sql,
-                    {"one_year_ago": one_year_ago, "one_year_future": one_year_future}
+                    {"one_year_ago": one_year_ago, "one_year_future": one_year_future, "seven_days_ago": seven_days_ago}
                 )
 
                 pending_marked = 0

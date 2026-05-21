@@ -370,8 +370,8 @@ class ScheduleResponse(BaseModel):
     config: dict[str, Any] | None
     last_run_at: datetime | None
     next_run_at: datetime | None
-    last_status: str | None
-    last_error: str | None
+    last_status: str | None = None
+    last_error: str | None = None
     created_at: datetime
     updated_at: datetime
 

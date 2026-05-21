@@ -44,6 +44,7 @@ function App() {
         <Route path="articles" element={<ArticlesPage />} />
         <Route path="reports" element={<ReportsPage />} />
         <Route path="templates" element={<TemplatesPage />} />
+
         <Route path="search" element={<SearchPage />} />
         <Route path="tasks" element={<TasksPage />} />
         <Route path="chat" element={<ChatPage />} />

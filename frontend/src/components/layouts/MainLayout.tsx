@@ -6,9 +6,7 @@ import {
   Globe,
   Network,
   FileText,
-  ScrollText,
   Settings,
-  FileJson,
   Search,
   Menu,
   X,
@@ -16,9 +14,6 @@ import {
   MessageSquare,
   Clock,
   Twitter,
-  Youtube,
-  Users,
-  Fingerprint,
   LogOut,
   Shield,
 } from "lucide-react"
@@ -36,6 +31,7 @@ interface NavigationItem {
   href: string
   icon: React.ComponentType<{ className?: string }>
   adminOnly?: boolean
+  external?: boolean
 }
 
 const navigation: NavigationItem[] = [
@@ -43,16 +39,12 @@ const navigation: NavigationItem[] = [
   { name: "采集源", href: "/sources", icon: Globe },
   { name: "Sitemap 管理", href: "/sitemaps", icon: Network },
   { name: "文章库", href: "/articles", icon: FileText },
-  { name: "报告生成", href: "/reports", icon: ScrollText },
-  { name: "模板管理", href: "/templates", icon: FileJson },
   { name: "联网搜索", href: "/search", icon: Search },
   { name: "Twitter 搜索", href: "/twitter-search", icon: Twitter },
   { name: "Google 搜索", href: "/google-search", icon: Search },
-  // { name: "社交媒体搜索", href: "/social-search", icon: Users },
-  // { name: "社工工具", href: "/osint", icon: Fingerprint },
   { name: "定时计划", href: "/schedules", icon: Clock },
   { name: "任务管理", href: "/tasks", icon: ListChecks },
-  { name: "AI 对话", href: "/chat", icon: MessageSquare },
+  { name: "AI 对话", href: "", icon: MessageSquare, external: true },
   { name: "系统设置", href: "/settings", icon: Settings },
   { name: "用户管理", href: "/users", icon: Shield, adminOnly: true },
 ]
@@ -100,14 +92,31 @@ export function MainLayout() {
         <div className="flex h-full flex-col">
           {/* Logo */}
           <div className="flex h-16 items-center border-b px-6">
-            <h1 className="text-xl font-bold text-primary">新闻态势分析系统</h1>
+            <h1 className="text-xl font-bold text-primary">智能情报分析系统</h1>
           </div>
 
           {/* 导航 */}
           <nav className="flex-1 space-y-1 px-3 py-4 overflow-y-auto">
             {filteredNavigation.map((item) => {
-              const isActive = location.pathname === item.href
+              const isActive = item.external ? false : location.pathname === item.href
               const Icon = item.icon
+
+              if (item.external) {
+                const externalUrl = item.href || `http://${window.location.hostname}:8080`
+                return (
+                  <a
+                    key={item.name}
+                    href={externalUrl}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="flex items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium transition-colors text-muted-foreground hover:bg-muted hover:text-foreground"
+                    onClick={() => setSidebarOpen(false)}
+                  >
+                    <Icon className="h-5 w-5" />
+                    {item.name}
+                  </a>
+                )
+              }
 
               return (
                 <Link
@@ -131,8 +140,7 @@ export function MainLayout() {
           {/* 底部信息 */}
           <div className="border-t p-4">
             <div className="text-xs text-muted-foreground">
-              <p>新闻态势分析系统</p>
-              <p className="mt-1">v2.0.0</p>
+              <p>智能情报分析系统</p>
             </div>
           </div>
         </div>

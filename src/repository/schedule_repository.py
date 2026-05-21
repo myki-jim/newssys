@@ -17,6 +17,7 @@ class ScheduleRepository(BaseRepository):
         config = schedule.get("config")
         config_json = json.dumps(config) if config else None
 
+        now = datetime.now().isoformat()
         return await self.insert(
             "schedules",
             {
@@ -26,8 +27,11 @@ class ScheduleRepository(BaseRepository):
                 "status": schedule.get("status", "active"),
                 "interval_minutes": schedule.get("interval_minutes", 60),
                 "max_executions": schedule.get("max_executions"),
+                "execution_count": 0,
                 "config": config_json,
                 "next_run_at": schedule.get("next_run_at"),
+                "created_at": now,
+                "updated_at": now,
             },
             returning="id",
         )

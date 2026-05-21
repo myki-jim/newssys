@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "news-api": {
+      "type": "http",
+      "url": "http://backend:8000/api/v1"
+    }
+  }
+}

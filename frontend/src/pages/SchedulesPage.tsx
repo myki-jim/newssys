@@ -55,7 +55,7 @@ interface Schedule {
   id: number
   name: string
   description: string | null
-  schedule_type: "sitemap_crawl" | "article_crawl" | "keyword_search"
+  schedule_type: "sitemap_crawl" | "article_crawl" | "keyword_search" | "cleanup_low_quality"
   status: "active" | "paused" | "disabled"
   interval_minutes: number
   max_executions: number | null
