@@ -27,6 +27,7 @@ import remarkGfm from "remark-gfm"
 import rehypeRaw from "rehype-raw"
 import rehypeSanitize from "rehype-sanitize"
 import { ArticleEditDialog } from "@/components/articles/ArticleEditDialog"
+import TranslateButton from "@/components/TranslateButton"
 import type { Article } from "@/types"
 
 export function ArticleDetailPage() {
@@ -147,6 +148,7 @@ export function ArticleDetailPage() {
                   <Edit className="h-4 w-4 mr-2" />
                   编辑
                 </Button>
+                <TranslateButton />
                 <Button variant="outline" size="sm" onClick={handleShare}>
                   <Share2 className="h-4 w-4 mr-2" />
                   分享

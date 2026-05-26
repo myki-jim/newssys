@@ -41,6 +41,7 @@ import {
 import { formatDateTime, truncateText } from "@/lib/utils"
 import type { Article } from "@/types"
 import { ArticleEditDialog } from "@/components/articles/ArticleEditDialog"
+import TranslateButton from "@/components/TranslateButton"
 
 const PAGE_SIZE = 30
 
@@ -231,6 +232,7 @@ export function ArticlesPage() {
           </p>
         </div>
         <div className="flex items-center gap-2">
+          <TranslateButton />
           {hasActiveFilters && (
             <Button variant="outline" onClick={clearAllFilters}>
               <X className="mr-2 h-4 w-4" />
@@ -240,7 +242,7 @@ export function ArticlesPage() {
           <Button
             variant="outline"
             onClick={() => {
-              if (confirm("确定要标记低质量内容吗？\n\n文章标记条件：\n• 内容少于 50 字符\n• 没有发布时间\n• 发布时间在一年之外\n\n待爬文章标记条件：\n• 没有发布时间\n• 发布时间在一年之外\n\n标记后的内容将被隐藏，不会参与任何操作。")) {
+              if (confirm("确定要标记低质量内容吗？\n\n文章标记条件：\n• 无标题或标题为空\n• 内容少于 50 字符\n• 没有发布时间\n• 发布时间在一年之外\n\n待爬文章标记条件：\n• 无标题或标题为空\n• 没有发布时间\n• 发布时间在一年之外\n\n标记后的内容将被隐藏，不会参与任何操作。")) {
                 cleanupMutation.mutate()
               }
             }}

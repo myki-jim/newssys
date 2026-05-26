@@ -114,4 +114,4 @@ START_DATE=$(date -u -d '7 days ago' +%Y-%m-%dT%H:%M:%S)
 - Always cite article IDs, titles, publish dates, and sources
 - Present stats in clean tables (markdown)
 - For briefs: headline, key stats, top stories with summaries, trending topics
-- Link back to system UI: `http://192.168.1.102/articles/<id>`
+- Link back to system UI: `http://192.168.20.26/articles/<id>`

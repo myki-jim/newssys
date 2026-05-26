@@ -656,6 +656,7 @@ class CleanupLowQualityExecutor(TaskExecutor):
                         AND (
                             LENGTH(COALESCE(content, '')) < 50
                             OR title IS NULL OR TRIM(COALESCE(title, '')) = ''
+                            OR title = '无标题'
                             OR publish_time IS NULL
                             OR publish_time < :one_year_ago
                             OR publish_time > :one_year_future
@@ -684,6 +685,7 @@ class CleanupLowQualityExecutor(TaskExecutor):
                         status != 'low_quality'
                         AND (
                             title IS NULL OR TRIM(COALESCE(title, '')) = ''
+                            OR title = '无标题'
                             OR publish_time IS NULL
                             OR publish_time < :one_year_ago
                             OR publish_time > :one_year_future

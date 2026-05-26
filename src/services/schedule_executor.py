@@ -130,9 +130,12 @@ class ScheduleExecutor:
         )
 
     async def _execute_article_crawl(self, db, schedule: dict) -> None:
-        """执行文章自动爬取任务 - 遍历所有有待爬文章的源"""
+        """执行文章自动爬取任务 - 先同步所有 sitemap，再遍历所有有待爬文章的源"""
         from src.core.models import ParserConfig, PendingArticleStatus
         from src.repository.source_repository import SourceRepository
+
+        # 先同步所有 sitemap，确保文章爬取前数据最新
+        await self._execute_sitemap_crawl(db, schedule)
 
         config = schedule.get("config", {})
         batch_size = config.get("batch_size", 50)

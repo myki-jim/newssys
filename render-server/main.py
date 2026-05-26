@@ -4,15 +4,24 @@ import hashlib
 import json
 import os
 import uuid
+import io
 from datetime import datetime, timezone
 from pathlib import Path
 
+from urllib.parse import quote
+
 from fastapi import FastAPI, Request, Form, Body
-from fastapi.responses import HTMLResponse, JSONResponse, FileResponse
+from fastapi.responses import HTMLResponse, JSONResponse, FileResponse, Response
 from pydantic import BaseModel
 import markdown as md_lib
 
-app = FastAPI(title="Render Server", version="1.1.0")
+try:
+    from weasyprint import HTML as WeasyHTML
+    HAS_WEASYPRINT = True
+except ImportError:
+    HAS_WEASYPRINT = False
+
+app = FastAPI(title="Render Server", version="1.2.0")
 
 CONTENT_DIR = Path(os.environ.get("RENDER_DATA_DIR", "/data/renders"))
 CONTENT_DIR.mkdir(parents=True, exist_ok=True)
@@ -165,9 +174,21 @@ PAGE_TEMPLATE = """<!DOCTYPE html>
   }}
   header h1 {{ font-size: 28px; font-weight: 700; margin-bottom: 8px; }}
   header .meta {{ font-size: 13px; opacity: 0.75; }}
+  .toolbar {{
+    max-width: 900px; margin: 0 auto; padding: 16px 24px 0;
+    display: flex; justify-content: flex-end; gap: 8px;
+  }}
+  .toolbar button {{
+    padding: 8px 20px; border: 1px solid #cbd5e0; border-radius: 6px;
+    background: #fff; color: #2b6cb0; cursor: pointer; font-size: 13px;
+    transition: all 0.15s;
+  }}
+  .toolbar button:hover {{ background: #2b6cb0; color: #fff; border-color: #2b6cb0; }}
+  .toolbar button.primary {{ background: #2b6cb0; color: #fff; border-color: #2b6cb0; }}
+  .toolbar button.primary:hover {{ background: #1a365d; }}
   .content {{
     background: #fff; border-radius: 12px; padding: 40px;
-    box-shadow: 0 1px 3px rgba(0,0,0,0.08); margin-top: -20px;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.08); margin-top: 8px;
   }}
   .content h1 {{ font-size: 24px; color: #1a365d; margin: 28px 0 12px; border-bottom: 2px solid #e2e8f0; padding-bottom: 8px; }}
   .content h2 {{ font-size: 20px; color: #2b6cb0; margin: 24px 0 10px; }}
@@ -194,6 +215,16 @@ PAGE_TEMPLATE = """<!DOCTYPE html>
     .content {{ padding: 24px; }}
     header {{ padding: 32px 16px; }}
     header h1 {{ font-size: 22px; }}
+    .toolbar {{ padding: 12px 16px 0; }}
+  }}
+  @media print {{
+    body {{ background: #fff; }}
+    header {{ background: #1a365d !important; -webkit-print-color-adjust: exact; print-color-adjust: exact; }}
+    .toolbar {{ display: none; }}
+    .footer {{ display: none; }}
+    .container {{ max-width: 100%; padding: 0; }}
+    .content {{ box-shadow: none; border-radius: 0; padding: 20px 0; }}
+    @page {{ margin: 15mm; size: A4; }}
   }}
 </style>
 </head>
@@ -203,6 +234,10 @@ PAGE_TEMPLATE = """<!DOCTYPE html>
   <div class="meta">生成时间: {created_at}</div>
 </header>
 <div class="container">
+  <div class="toolbar">
+    <button onclick="window.print()" title="浏览器打印为PDF">🖨 打印 / 导出PDF</button>
+    <button class="primary" onclick="location.href='/view/{sid}/pdf'" title="服务端生成PDF下载">📥 下载PDF</button>
+  </div>
   <div class="content">
 {body}
   </div>
@@ -309,7 +344,7 @@ async def publish(request: Request):
     else:
         body_html = content
 
-    page = PAGE_TEMPLATE.format(title=title, created_at=now, body=body_html)
+    page = PAGE_TEMPLATE.format(title=title, created_at=now, body=body_html, sid=sid)
     html_path = CONTENT_DIR / f"{sid}.html"
     html_path.write_text(page, encoding="utf-8")
     meta["file_type"] = "html"
@@ -329,6 +364,9 @@ async def view(sid: str):
 
     meta = json.loads(meta_path.read_text())
 
+    if html_path.exists():
+        return HTMLResponse(html_path.read_text(encoding="utf-8"))
+
     if pdf_path.exists():
         page = PDF_PAGE.format(
             title=meta.get("title", "PDF"),
@@ -337,10 +375,43 @@ async def view(sid: str):
         )
         return HTMLResponse(page)
 
-    if html_path.exists():
-        return HTMLResponse(html_path.read_text(encoding="utf-8"))
-
     return HTMLResponse("<h1>404 — 内容文件缺失</h1>", status_code=404)
+
+
+@app.get("/view/{sid}/pdf")
+async def export_pdf(sid: str):
+    """将已发布内容导出为PDF"""
+    html_path = CONTENT_DIR / f"{sid}.html"
+    meta_path = CONTENT_DIR / f"{sid}.meta.json"
+
+    if not html_path.exists() or not meta_path.exists():
+        return HTMLResponse("<h1>404 — 内容不存在</h1>", status_code=404)
+
+    meta = json.loads(meta_path.read_text())
+
+    # Check if PDF already cached
+    pdf_path = CONTENT_DIR / f"{sid}.pdf"
+    if pdf_path.exists():
+        safe_name = quote(meta.get('title', 'report') + '.pdf')
+        return FileResponse(pdf_path, media_type="application/pdf",
+                           headers={"Content-Disposition":
+                                    f"attachment; filename*=UTF-8''{safe_name}"})
+
+    if not HAS_WEASYPRINT:
+        return JSONResponse(
+            {"error": "PDF export not available — weasyprint not installed"},
+            status_code=501)
+
+    try:
+        html_content = html_path.read_text(encoding="utf-8")
+        pdf_bytes = WeasyHTML(string=html_content).write_pdf()
+        pdf_path.write_bytes(pdf_bytes)
+        safe_name = quote(meta.get('title', 'report') + '.pdf')
+        return Response(pdf_bytes, media_type="application/pdf",
+                       headers={"Content-Disposition":
+                                f"attachment; filename*=UTF-8''{safe_name}"})
+    except Exception as e:
+        return JSONResponse({"error": f"PDF generation failed: {str(e)}"}, status_code=500)
 
 
 @app.get("/raw/{sid}")

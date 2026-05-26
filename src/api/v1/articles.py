@@ -852,6 +852,8 @@ async def cleanup_articles(
             status != 'low_quality'
             AND (
                 LENGTH(COALESCE(content, '')) < 50
+                OR title IS NULL OR TRIM(COALESCE(title, '')) = ''
+                OR title = '无标题'
                 OR publish_time IS NULL
                 OR publish_time < :one_year_ago
                 OR publish_time > :one_year_future
@@ -882,7 +884,9 @@ async def cleanup_articles(
         SELECT id FROM pending_articles WHERE
             status != 'low_quality'
             AND (
-                publish_time IS NULL
+                title IS NULL OR TRIM(COALESCE(title, '')) = ''
+                OR title = '无标题'
+                OR publish_time IS NULL
                 OR publish_time < :one_year_ago
                 OR publish_time > :one_year_future
             )

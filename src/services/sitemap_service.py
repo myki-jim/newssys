@@ -577,7 +577,7 @@ class SitemapService:
                         enabled=True,  # 添加 sitemap 时自动启用源
                     )
                 )
-                target_source_id = new_source_id
+                target_source_id = new_source_id["id"]
                 logger.info(f"Created new source {target_source_id} for sitemap")
 
         # 检查 Sitemap 是否已存在

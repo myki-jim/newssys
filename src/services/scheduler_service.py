@@ -197,6 +197,9 @@ class SchedulerService:
         config = schedule.get("config") or {}
         limit_per_source = int(config.get("batch_size", 50))
 
+        # 先同步所有 sitemap，确保文章爬取前数据最新
+        sitemap_sync_result = await self._enqueue_sitemap_sync_tasks(schedule)
+
         async with get_async_session() as db:
             manager = TaskManager(db)
             task = await manager.create_task(
@@ -206,12 +209,14 @@ class SchedulerService:
                 auto_start=False,
             )
 
-        logger.info("已为调度任务 %s 派发文章爬取任务 %s", schedule["name"], task.id)
+        logger.info("已为调度任务 %s 派发文章爬取任务 %s（已先派发 %s 个 sitemap 同步任务）",
+                    schedule["name"], task.id, sitemap_sync_result.get("queued_task_count", 0))
         return {
             "dispatch_mode": "queue",
             "schedule_type": schedule["schedule_type"],
             "queued_task_count": 1,
             "queued_task_ids": [task.id],
+            "sitemap_sync_tasks": sitemap_sync_result.get("queued_task_count", 0),
         }
 
     async def _enqueue_cleanup_task(self, schedule: dict) -> dict:

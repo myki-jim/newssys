@@ -117,7 +117,7 @@ curl -s -X POST "http://render-server:8000/api/publish" \
 # Returns: {"url": "/view/abc123", "id": "abc123"}
 ```
 
-Report the returned URL to the user: `http://192.168.1.102:8081/view/{id}`
+Report the returned URL to the user: `http://192.168.20.26:8081/view/{id}`
 
 ## Style conventions
 - Sections: `一、二、三...` with `add_h2()`, sub-sections: `1. 2. 3...` with `add_h3()`
