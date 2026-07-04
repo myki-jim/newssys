@@ -14,7 +14,7 @@ import tarfile
 import io
 import time
 
-HOST = "192.168.1.102"
+HOST = "192.168.100.108"
 USER = "wangshan"
 PASSWORD = "jK114514."
 DEPLOY_DIR = "/home/wangshan/newssys"

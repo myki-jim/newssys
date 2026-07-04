@@ -309,6 +309,9 @@ app.include_router(
     tags=["auth"],
 )
 
+# 访问门禁路由 (无 /api 前缀，供浏览器直接访问和 nginx auth_request 使用)
+app.include_router(auth.gate_router)
+
 app.include_router(
     users.router,
     prefix="/api/v1",

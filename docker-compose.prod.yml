@@ -44,6 +44,7 @@ services:
       - DATABASE_CHARSET=utf8mb4
       - DATABASE_POOL_SIZE=10
       - DATABASE_MAX_OVERFLOW=20
+      - ACCESS_GATE_SECRET=${ACCESS_GATE_SECRET:-newssys-gate-2026}
       - OPENAI_API_KEY=${OPENAI_API_KEY:-}
       - OPENAI_BASE_URL=${OPENAI_BASE_URL:-https://api.openai.com/v1}
       - OPENAI_MODEL=${OPENAI_MODEL:-gpt-4o-mini}
@@ -62,8 +63,8 @@ services:
       - SERVICE_HEALTHCHECK_GRACE_SECONDS=${BACKEND_HEALTHCHECK_GRACE_SECONDS:-60}
       - SERVICE_HEALTHCHECK_FAILURES=${BACKEND_HEALTHCHECK_FAILURES:-3}
       - API_HEALTHCHECK_URL=http://127.0.0.1:8000/api/v1/health
-      - CORS_ORIGINS=["http://localhost","http://192.168.1.102"]
-      - FRONTEND_URL=http://192.168.1.102
+      - CORS_ORIGINS=["http://localhost","http://192.168.100.108"]
+      - FRONTEND_URL=http://192.168.100.108
     volumes:
       - ./src:/app/src:ro
       - ./scripts:/app/scripts:ro

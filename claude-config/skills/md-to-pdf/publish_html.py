@@ -16,7 +16,7 @@ import urllib.request
 import urllib.parse
 
 RENDER_SERVER = os.environ.get("RENDER_SERVER_URL", "http://render-server:8000")
-EXTERNAL_HOST = os.environ.get("EXTERNAL_HOST", "192.168.20.26:8081")
+EXTERNAL_HOST = os.environ.get("EXTERNAL_HOST", "192.168.100.108:8081")
 MIN_CONTENT_BYTES = 100
 
 

@@ -267,6 +267,11 @@ class RuntimeSettings(BaseSettings):
             "sitemap_heartbeat_stale_seconds",
         ),
     )
+    access_gate_secret: str = Field(
+        default="newssys-gate-secret",
+        validation_alias=AliasChoices("ACCESS_GATE_SECRET", "access_gate_secret"),
+        description="访问密码生成密钥，修改后每日密码不同",
+    )
 
 
 class Settings(BaseSettings):

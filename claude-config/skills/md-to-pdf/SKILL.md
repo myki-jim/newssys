@@ -74,7 +74,7 @@ python3 /root/.claude/skills/md-to-pdf/generate_pdf.py --no-upload --file report
 
 成功时输出 JSON：
 ```json
-{"url": "http://192.168.20.26:8081/view/abc123", "id": "abc123"}
+{"url": "http://192.168.100.108:8081/view/abc123", "id": "abc123"}
 ```
 
 ## 模板

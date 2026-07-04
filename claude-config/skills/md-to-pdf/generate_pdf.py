@@ -270,7 +270,7 @@ def main():
             sys.exit(1)
         view_url = result.get("url", "")
         # Build external URL
-        external_host = os.environ.get("EXTERNAL_HOST", "192.168.20.26:8081")
+        external_host = os.environ.get("EXTERNAL_HOST", "192.168.100.108:8081")
         if view_url.startswith("/view/"):
             full_url = f"http://{external_host}{view_url}"
         else:
